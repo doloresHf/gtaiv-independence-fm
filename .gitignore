@@ -1,0 +1,16 @@
+# Build outputs
+build/
+.vs/
+out/
+
+# Runtime & archived logs
+logs/
+*.log
+*.jsonl
+
+# Local backups of deployed binaries
+backups/
+
+# Generated large WAV test fixtures (MP3 baseline assets in assets/ are tracked)
+assets/*.wav
+plugins/

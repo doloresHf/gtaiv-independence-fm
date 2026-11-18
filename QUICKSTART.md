@@ -1,0 +1,11 @@
+# Independence FM — Quick Start
+
+1. Launch GTA IV normally once, then exit it. Extract the full ZIP to a writable folder. Run **Setup.exe**, select **GTAIV.exe** using Steam → Manage → Browse local files, and check where Setup will place the files. If the Win32 loader is missing, follow the Setup link for the official x86 **dinput8.dll** build. If that filename already belongs to another mod, consult its instructions before changing it.
+2. Start playing audio. In Windows **Settings → System → Sound → Volume mixer**, route the source app to an active, physically quiet secondary output. Keep the source session unmuted and GTA IV on the main output. If using Apple Music select **Settings → Playback → Dolby Atmos → Off**. For a custom source, open **Options → Settings → Custom Audio App** and choose the playing app. A browser source is an app, not an individual tab.
+3. Start the tray app, then start GTA IV and run **Complete Scan for Music** in the Audio menu. Use Independence FM in a vehicle. The launcher shows **Waiting for game** until the game starts pulling the stream. Keep both applications running during play.
+
+After setup the tray app is at `%LOCALAPPDATA%\GTAIV-Independence-FM\iv_apple_music_radio.exe`. Pin it if desired. To repair or uninstall, exit GTA IV and the tray app, then open **Setup.exe** from the extracted package again. After removal, run Complete Scan to refresh the music list.
+
+If the station is missing, confirm that all three carriers are present and locally available, then scan again. If the tray receives audio but GTA IV has no sound, check that the ASI loader loaded the plugin, that you selected Independence FM, and that the scan used the right User Music folder. Existing user songs may play between streams. To hear only the stream, manually move your songs outside User Music temporarily and scan again. Restore them and rescan whenever you want.
+
+If two copies play, check the source app's output assignment in Volume Mixer. Muting that app in Windows can also silence capture. For persistent silence, try a shared-mode stereo source and confirm the secondary endpoint is still active. The game buffers its audio, so switching sources is delayed. Carrier changes can include about five seconds of silence. Use the source app to change songs.

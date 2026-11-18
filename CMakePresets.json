@@ -1,0 +1,46 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "win32-vs",
+      "displayName": "Win32 (x86) Visual Studio Probe & Selftest",
+      "binaryDir": "${sourceDir}/build/win32_main",
+      "architecture": {
+        "value": "Win32",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "x64-vs",
+      "displayName": "x64 Visual Studio Stage C Companion Producer",
+      "binaryDir": "${sourceDir}/build/x64_main",
+      "architecture": {
+        "value": "x64",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "win32-release",
+      "configurePreset": "win32-vs",
+      "configuration": "Release"
+    },
+    {
+      "name": "x64-release",
+      "configurePreset": "x64-vs",
+      "configuration": "Release"
+    }
+  ]
+}
