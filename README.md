@@ -1,24 +1,36 @@
 # Independence FM: Stream Apple Music (or Anything You Want) to Your Car Radio in GTA IV
 
-Listen to audio from Apple Music or a compatible Windows app on Independence FM.
-This is an unofficial mod. [中文安装指南](QUICKSTART-zh-CN.md) · [English quick start](QUICKSTART.md)
+Listen to audio from Apple Music or a compatible Windows app on Independence FM in GTA IV without an extra hardware audio device or manual Volume Mixer toggling.
+This is an unofficial mod. [中文安装指南](QUICKSTART-zh-CN.md) · [English quick start](QUICKSTART.md) · [Changelog](CHANGELOG.md)
 
 ## Download
 
 Open [Releases](https://github.com/doloresHf/gtaiv-independence-fm/releases) and choose the **win64 ZIP** under Assets.
-Extract the entire ZIP first, then double-click **Setup.exe**.
+Extract the entire ZIP first, then double-click **Setup.exe** (also supports in-place upgrades from `v0.2.0-beta.1` while keeping your installed paths).
 
-Target configuration: Windows 11 x64, Steam GTA IV Complete Edition 1.2.0.59, a Win32 ASI loader, and two active audio outputs. Apple Music is a preset. Custom sources use Windows process-loopback capture with a compatible shared audio format. Browser tabs in the same process tree can be heard together. Exclusive, ASIO and spatial modes are outside the supported configuration. The beta's verified app and device combinations are listed in its release notes.
+## What is New in `v0.3.0-beta.1`
+
+- **Zero-Hardware Automatic Silent Isolation**: Single-headphone / single-speaker PCs are supported without needing a second physical DAC. When a compatible virtual silent sink (such as `Steam Streaming Speakers` or `VB-Audio Virtual Cable`) is present, the tray app automatically routes only your chosen audio app to the virtual silent sink while active, keeps Windows default playback/recording devices untouched for GTA IV, and automatically restores your music app back to your main speakers when stopping or exiting (including crash recovery).
+- **Clean Public Packaging (No Third-Party Proprietary Binaries)**: To stay 100% compliant with MIT licensing, this repository and release ZIP do **not** redistribute proprietary third-party kernel drivers. Existing `Steam Streaming Speakers` / `VB-Cable` virtual sinks are detected automatically; if none is present yet, **Options → Settings** can detect/verify local Steam WHQL driver files (by pinned SHA-256), let you pick a local WHQL driver folder, or link to VB-Cable (and manual secondary-endpoint Volume Mixer routing remains supported).
+- **In-Place Upgrade & Safe Uninstall**: `Setup.exe` upgrades existing `v0.2.0-beta.1` installations in place, restores persisted per-app audio routes before uninstalling, and preserves modified files and unrelated User Music tracks.
+
+## Requirements & Compatibility
+
+- Windows 11 x64 (`AudioPolicyConfig` + Windows process-loopback APIs), Steam GTA IV Complete Edition `1.2.0.59` (x86), and an x86 ASI loader (`dinput8.dll`).
+- Apple Music is configured as a preset (**Settings → Playback → Dolby Atmos → Off**). Custom sources use Windows process-loopback capture with a compatible shared-mode audio format. Browser tabs in the same process tree can be heard together.
+- Exclusive mode (WASAPI Exclusive / ASIO) and spatial audio modes are outside the supported configuration. The beta release notes list the verified app and device combinations.
 
 ## Build
 
-Use Windows with Visual Studio 2022 C++ Build Tools, a Windows SDK with process-loopback headers, CMake 3.22+, Python 3 and the Windows Media components.
+Use Windows with Visual Studio 2022 C++ Build Tools, a Windows SDK with process-loopback headers (`10.0.22621+`), CMake 3.22+, Python 3, and Windows Media Foundation components.
 From a clean checkout, run:
 
 ```powershell
 powershell -NoProfile -File .\build-release.ps1
 ```
 
-Use `-CMake <path>` if CMake is outside PATH. This builds Win32 and x64, runs offline regressions, generates and verifies the silent carriers, and puts the player ZIP and SHA-256 under `build/release/`. The installer and daily launcher do not require the build tools.
+Use `-CMake <path>` if CMake is outside `PATH`. This builds Win32 and x64, runs all offline regressions (`ipc_protocol_selftest`, `wmf_selftest`, `stage_d_*`, `stage_e_offline_selftest`, `Setup.exe --selftest`), generates and verifies the 20-minute silent MP3 carriers, and writes the player ZIP, `.sha256`, and `candidate-manifest.json` under `build/release/`. The installer and daily tray launcher require no build tools.
 
-MIT for project code. The archive also includes the MinHook/HDE notices.
+## License
+
+MIT for project source code (`LICENSE`). See `THIRD-PARTY-NOTICES.txt` for MinHook / HDE licensing. No third-party proprietary kernel drivers are distributed in this repository.

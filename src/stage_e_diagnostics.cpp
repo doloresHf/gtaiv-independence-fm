@@ -611,6 +611,20 @@ bool LoadLauncherSettings(const std::wstring& filePath,
         return false;
     }
 
+    std::string autoRouteVal;
+    parseErr.clear();
+    if (ExtractJsonStringFieldSimple(content, "auto_route_mode", autoRouteVal, parseErr)) {
+        AutoRouteMode parsedRouteMode = AutoRouteMode::Auto;
+        if (!ParseAutoRouteModeCode(autoRouteVal, parsedRouteMode)) {
+            outError = "Unsupported 'auto_route_mode' value in settings: " + autoRouteVal;
+            return false;
+        }
+        outSettings.autoRouteMode = parsedRouteMode;
+    } else if (!parseErr.empty()) {
+        outError = parseErr;
+        return false;
+    }
+
     if (outSettings.source.mode == AudioSourceMode::CustomProcess) {
         if (outSettings.source.customExeName.empty() && !outSettings.source.customExePath.empty()) {
             outSettings.source.customExeName = staged::ExtractLeafFilename(outSettings.source.customExePath);
@@ -653,8 +667,9 @@ bool SaveLauncherSettings(const std::wstring& filePath,
         : staged::ExtractLeafFilename(settings.source.customExeName);
 
     std::string json = "{\n";
-    json += "  \"version\": " + std::to_string(settings.version) + ",\n";
+    json += "  \"version\": " + std::to_string(std::max<uint32_t>(3u, settings.version)) + ",\n";
     json += "  \"language\": \"" + staged::EscapeJsonString(UiLanguageToCode(settings.language)) + "\",\n";
+    json += "  \"auto_route_mode\": \"" + staged::EscapeJsonString(AutoRouteModeToCode(settings.autoRouteMode)) + "\",\n";
     json += "  \"source_mode\": \"" + staged::EscapeJsonString(AudioSourceModeToCode(settings.source.mode)) + "\",\n";
     json += "  \"custom_exe_name\": \"" + staged::EscapeJsonString(staged::WideToUtf8(leafExe)) + "\",\n";
     json += "  \"custom_exe_path\": \"" + staged::EscapeJsonString(staged::WideToUtf8(settings.source.customExePath)) + "\"\n";
@@ -862,14 +877,28 @@ void FormatRoutingDiagnosticText(RoutingDiagnostic& out, UiLanguage lang) {
 
     switch (out.state) {
         case RoutingIsolationState::IsolatedOk:
-            if (out.targetSessionActive) {
-                out.bannerTitleUtf8 = en
-                    ? "Split-Endpoint Isolation Active (No Desktop Echo)"
-                    : "路由隔离正常（无桌面回音）";
+            if (out.hasAutoRouteStatus &&
+                out.autoRoute.mode == AutoRouteMode::Auto &&
+                out.autoRoute.state == AutoRouteState::AutoIsolatedOk) {
+                if (out.targetSessionActive) {
+                    out.bannerTitleUtf8 = en
+                        ? "Auto Silent Isolation Active (Zero Hardware · Auto-Restores on Exit)"
+                        : "自动静音隔离已生效（零硬件 · 退出自动恢复外放）";
+                } else {
+                    out.bannerTitleUtf8 = en
+                        ? "Auto Silent Isolation Ready (Paused · Auto-Restores on Exit)"
+                        : "自动静音隔离已就绪（当前暂停 · 退出自动恢复外放）";
+                }
             } else {
-                out.bannerTitleUtf8 = en
-                    ? "Split-Endpoint Isolation Ready (Paused)"
-                    : "路由隔离已就绪（当前暂停）";
+                if (out.targetSessionActive) {
+                    out.bannerTitleUtf8 = en
+                        ? "Split-Endpoint Isolation Active (No Desktop Echo)"
+                        : "路由隔离正常（无桌面回音）";
+                } else {
+                    out.bannerTitleUtf8 = en
+                        ? "Split-Endpoint Isolation Ready (Paused)"
+                        : "路由隔离已就绪（当前暂停）";
+                }
             }
             out.bannerDetailUtf8 = en
                 ? (appDisp + " -> [" + out.targetEndpointNameUtf8 + "]  |  Main Output -> [" + defEpDisp + "]")
@@ -910,30 +939,61 @@ void FormatRoutingDiagnosticText(RoutingDiagnostic& out, UiLanguage lang) {
             return;
 
         case RoutingIsolationState::ConflictOnDefaultOutput:
+            if (out.hasAutoRouteStatus &&
+                out.autoRoute.virtualSinkPresence == VirtualSinkPresence::VirtualSinkIsSystemDefault) {
+                out.bannerTitleUtf8 = en
+                    ? "Hazard: Virtual Silent Sink Is Currently Windows Default Output!"
+                    : "告警：虚拟静音端点被设为 Windows 默认输出设备！";
+                out.bannerDetailUtf8 = en
+                    ? ("Please set your real headphones/speakers as Windows Default Output in Sound Settings; otherwise both " +
+                       appDisp + " and GTA IV will output to the silent virtual sink.")
+                    : ("请在系统声音设置中将实体耳机/音箱设回『默认输出设备』；否则 " + appDisp + " 与游戏声音均会落入静音黑洞。");
+                return;
+            }
             if (out.targetSessionActive) {
                 out.bannerTitleUtf8 = en
                     ? ("Routing Overlap Warning: " + appDisp + " Is Playing on Main Output!")
                     : ("路由重叠警告：" + appDisp + " 正在主输出设备发声！");
-                out.bannerDetailUtf8 = en
-                    ? (appDisp + " is outputting directly to [" + out.targetEndpointNameUtf8 +
-                       "], causing ~8s delayed double audio with the game radio. Stopping the bridge only mutes the game radio — "
-                       "click 'Volume Mixer' and route " + appDisp + " to a secondary device.")
-                    : (appDisp + " 当前位于主设备 [" + out.targetEndpointNameUtf8 +
-                       "]，会与游戏电台产生双声重叠。暂停本桥接器仅停止向游戏供音，"
-                       "无法阻止主设备直出；请点击『打开音量合成器』将输出改到副设备。");
+                if (out.hasAutoRouteStatus &&
+                    out.autoRoute.mode == AutoRouteMode::Auto &&
+                    out.autoRoute.state == AutoRouteState::NoVirtualSinkInstalled) {
+                    out.bannerDetailUtf8 = en
+                        ? (appDisp + " is outputting directly to [" + out.targetEndpointNameUtf8 +
+                           "] (~8s delayed echo). Open 'Options -> Settings' and click 'Install Virtual Silent Sink' for zero-hardware auto isolation, or use 'Volume Mixer'.")
+                        : (appDisp + " 当前正在主设备 [" + out.targetEndpointNameUtf8 +
+                           "] 发声（约 8s 回音）。请在『选项 -> 设置』点击『一键安装虚拟静音端点』实现全自动无硬件隔离，或通过『打开音量合成器』切至副设备。");
+                } else {
+                    out.bannerDetailUtf8 = en
+                        ? (appDisp + " is outputting directly to [" + out.targetEndpointNameUtf8 +
+                           "], causing ~8s delayed double audio with the game radio. Stopping the bridge only mutes the game radio — "
+                           "click 'Volume Mixer' and route " + appDisp + " to a secondary device.")
+                        : (appDisp + " 当前位于主设备 [" + out.targetEndpointNameUtf8 +
+                           "]，会与游戏电台产生双声重叠。暂停本桥接器仅停止向游戏供音，"
+                           "无法阻止主设备直出；请点击『打开音量合成器』将输出改到副设备。");
+                }
             } else {
                 out.bannerTitleUtf8 = en
                     ? ("Routing Overlap Notice: " + appDisp + " Session Is on Main Output")
                     : ("路由重叠提醒：" + appDisp + " 会话位于主输出设备");
                 out.bannerDetailUtf8 = en
                     ? (appDisp + " is bound to main device [" + out.targetEndpointNameUtf8 +
-                       "], which will cause double audio once playback starts. Click 'Volume Mixer' to route it to a secondary device.")
+                       "], which will cause double audio once playback starts. Install the Virtual Silent Sink in Settings or route it in Volume Mixer.")
                     : (appDisp + " 当前绑定在主设备 [" + out.targetEndpointNameUtf8 +
-                       "]，开始播放后会产生双声回音；请点击『打开音量合成器』将其输出改到副设备。");
+                       "]，开始播放后会产生双声；请在『设置』安装虚拟静音端点或于音量合成器切换副设备。");
             }
             return;
 
         case RoutingIsolationState::SingleEndpointOnly:
+            if (out.hasAutoRouteStatus &&
+                out.autoRoute.virtualSinkPresence == VirtualSinkPresence::VirtualSinkIsSystemDefault) {
+                out.bannerTitleUtf8 = en
+                    ? "Hazard: Virtual Silent Sink Is Windows Default Output!"
+                    : "告警：虚拟静音端点正作为 Windows 系统默认输出！";
+                out.bannerDetailUtf8 = en
+                    ? "Switch Windows Default Output back to your physical headphones or speakers in Sound Settings."
+                    : "请在 Windows 声音设置中将默认播放设备改回你的物理耳机或音箱。";
+                return;
+            }
             out.bannerTitleUtf8 = en
                 ? "Single Output Notice: No Secondary Audio Endpoint Detected"
                 : "单输出设备提醒：未检测到副音频分流端点";
@@ -941,6 +1001,14 @@ void FormatRoutingDiagnosticText(RoutingDiagnostic& out, UiLanguage lang) {
                 out.bannerDetailUtf8 = en
                     ? "No active audio output devices detected. Please connect your headphones/speakers and a secondary output device."
                     : "当前未检测到可用音频输出设备；请连接耳机/音箱与副音频设备。";
+            } else if (out.hasAutoRouteStatus &&
+                       out.autoRoute.mode == AutoRouteMode::Auto &&
+                       out.autoRoute.state == AutoRouteState::NoVirtualSinkInstalled) {
+                out.bannerDetailUtf8 = en
+                    ? ("Only 1 playback device [" + defEpDisp +
+                       "] is active. Click 'Options -> Settings -> Install Virtual Silent Sink' for automatic zero-hardware isolation.")
+                    : ("系统当前仅有 1 个播放设备 [" + defEpDisp +
+                       "]；请打开『选项 -> 设置』点击『一键安装虚拟静音端点』，即可无需第二声卡实现全自动静音隔离。");
             } else {
                 out.bannerDetailUtf8 = en
                     ? ("Only 1 playback device [" + defEpDisp +
@@ -951,6 +1019,22 @@ void FormatRoutingDiagnosticText(RoutingDiagnostic& out, UiLanguage lang) {
             return;
 
         case RoutingIsolationState::WaitingForTargetSession:
+            if (out.hasAutoRouteStatus &&
+                out.autoRoute.mode == AutoRouteMode::Auto &&
+                (out.autoRoute.virtualSinkPresence == VirtualSinkPresence::ActiveReady) &&
+                !out.autoRoute.sinkFriendlyNameUtf8.empty()) {
+                out.bannerTitleUtf8 = en
+                    ? ("Virtual Silent Sink Ready (" + out.autoRoute.sinkFriendlyNameUtf8 + ")")
+                    : ("虚拟静音端点已就绪（" + out.autoRoute.sinkFriendlyNameUtf8 + "）");
+                out.bannerDetailUtf8 = en
+                    ? ("Main output [" + defEpDisp + "] preserved; " + appDisp +
+                       " will be isolated to [" + out.autoRoute.sinkFriendlyNameUtf8 +
+                       "] automatically on playback and restored when bridge stops.")
+                    : ("已锁定主输出 [" + defEpDisp + "]；播放 " + appDisp +
+                       " 时将自动切入 [" + out.autoRoute.sinkFriendlyNameUtf8 +
+                       "]，停止/退出桥接器后自动恢复外放。");
+                return;
+            }
             out.bannerTitleUtf8 = en
                 ? ("Multiple Outputs Ready (Waiting for " + appDisp + " Audio Session)")
                 : ("多输出设备已就绪（等待 " + appDisp + " 音频会话）");
@@ -978,8 +1062,13 @@ RoutingDiagnostic EvaluateRoutingIsolation(const staged::AudioTopologyReport& to
                                            uint32_t currentTargetPid,
                                            const std::wstring& targetExeLeaf,
                                            RoutingIsolatorTracker& tracker,
-                                           UiLanguage lang) {
+                                           UiLanguage lang,
+                                           const AutoRouteStatus* optAutoRoute) {
     RoutingDiagnostic out;
+    if (optAutoRoute) {
+        out.hasAutoRouteStatus = true;
+        out.autoRoute = *optAutoRoute;
+    }
     out.activeRenderEndpointCount = static_cast<uint32_t>(topo.endpoints.size());
 
     const std::wstring effectiveLeaf = targetExeLeaf.empty()
@@ -1267,7 +1356,9 @@ BridgeDiagnosticReport EvaluateBridgeDiagnostics(const BridgeDiagnosticInput& in
     BridgeDiagnosticReport out;
     out.hasRoutingConflict =
         (input.routing.state == RoutingIsolationState::ConflictOnDefaultOutput) ||
-        (input.routing.state == RoutingIsolationState::SecondaryEndpointLostFallback);
+        (input.routing.state == RoutingIsolationState::SecondaryEndpointLostFallback) ||
+        (input.routing.hasAutoRouteStatus &&
+         input.routing.autoRoute.virtualSinkPresence == VirtualSinkPresence::VirtualSinkIsSystemDefault);
 
     if (input.producerMutexBusy) {
         tracker.Reset();
@@ -1931,7 +2022,7 @@ std::string FormatStageETelemetryJsonLine(const staged::TimelineStatsSnapshot& s
     }
     base.pop_back(); // Remove closing '}' to append E1 diagnostic fields cleanly
 
-    char extBuf[1024]{};
+    char extBuf[1280]{};
     std::snprintf(
         extBuf,
         sizeof(extBuf),
@@ -1940,7 +2031,10 @@ std::string FormatStageETelemetryJsonLine(const staged::TimelineStatsSnapshot& s
         "\"e1_nonzero_frames_1s\":%llu,\"e1_audible_frames_1s\":%llu,"
         "\"e1_continuous_silent_ms\":%llu,\"e1_session_active\":%s,"
         "\"e1_session_muted\":%s,\"e1_target_endpoint\":\"%s\","
-        "\"e1_default_endpoint\":\"%s\"}",
+        "\"e1_default_endpoint\":\"%s\","
+        "\"e2_auto_route_mode\":\"%s\",\"e2_auto_route_state\":\"%s\","
+        "\"e2_virtual_sink_presence\":\"%s\",\"e2_isolated_identities\":%u,"
+        "\"e2_pending_restores\":%u}",
         staged::EscapeJsonString(staged::GetCurrentUtcIsoString()).c_str(),
         staged::EscapeJsonString(PipelineHeadlineStateName(report.headline)).c_str(),
         staged::EscapeJsonString(RoutingIsolationStateName(routing.state)).c_str(),
@@ -1953,7 +2047,12 @@ std::string FormatStageETelemetryJsonLine(const staged::TimelineStatsSnapshot& s
         routing.targetSessionActive ? "true" : "false",
         routing.targetSessionMuted ? "true" : "false",
         staged::EscapeJsonString(TruncateUtf8Safe(routing.targetEndpointNameUtf8, 160u)).c_str(),
-        staged::EscapeJsonString(TruncateUtf8Safe(routing.defaultEndpointNameUtf8, 160u)).c_str());
+        staged::EscapeJsonString(TruncateUtf8Safe(routing.defaultEndpointNameUtf8, 160u)).c_str(),
+        staged::EscapeJsonString(AutoRouteModeToCode(routing.autoRoute.mode)).c_str(),
+        staged::EscapeJsonString(AutoRouteStateName(routing.autoRoute.state)).c_str(),
+        staged::EscapeJsonString(VirtualSinkPresenceName(routing.autoRoute.virtualSinkPresence)).c_str(),
+        static_cast<unsigned>(routing.autoRoute.isolatedIdentityCount),
+        static_cast<unsigned>(routing.autoRoute.pendingRestoreCount));
 
     base += extBuf;
     return base;

@@ -1,11 +1,13 @@
 #include "stage_e_diagnostics.h"
 #include "stage_e_engine.h"
+#include "stage_e_routing_isolator.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -1535,6 +1537,358 @@ void TestStreamAnythingAndHotSwap(const std::wstring& launcherExePath) {
     DeleteDirectoryTreeTestOnly(tempRoot);
 }
 
+// ============================================================================
+// Suite 8: Stage E2 Zero-Hardware Virtual Sink & AutoRouteController Lifecycle
+// ============================================================================
+
+class FakeAudioEndpointPolicyAccess final : public stagee::IAudioEndpointPolicyAccess {
+public:
+    bool supported = true;
+    bool failWrites = false;
+    std::vector<stagee::ProcessPolicyIdentity> liveIdentities;
+    std::map<std::wstring, std::map<ERole, std::wstring>> persistedByKey;
+
+    bool IsSupported(std::string& outReason) override {
+        if (!supported) {
+            outReason = "Mock unsupported OS build";
+            return false;
+        }
+        outReason.clear();
+        return true;
+    }
+
+    bool EnumeratePolicyIdentities(const staged::AudioTopologyReport&,
+                                   std::vector<stagee::ProcessPolicyIdentity>& outIdentities,
+                                   std::string& outError) override {
+        outError.clear();
+        outIdentities = liveIdentities;
+        return true;
+    }
+
+    bool GetPersistedDefaultEndpoint(uint32_t pid,
+                                     EDataFlow flow,
+                                     ERole role,
+                                     std::wstring& outEndpointId,
+                                     HRESULT& outHr,
+                                     std::string& outError) override {
+        outEndpointId.clear();
+        outError.clear();
+        if (!supported) {
+            outHr = E_NOINTERFACE;
+            return false;
+        }
+        if (flow != eRender) {
+            outHr = E_INVALIDARG;
+            return false;
+        }
+        const std::wstring key = FindKeyByPid(pid);
+        if (key.empty()) {
+            outHr = E_INVALIDARG;
+            outError = "Unknown PID";
+            return false;
+        }
+        auto itKey = persistedByKey.find(key);
+        if (itKey != persistedByKey.end()) {
+            auto itRole = itKey->second.find(role);
+            if (itRole != itKey->second.end()) {
+                outEndpointId = itRole->second;
+            }
+        }
+        outHr = S_OK;
+        return true;
+    }
+
+    bool SetPersistedDefaultEndpoint(uint32_t pid,
+                                     EDataFlow flow,
+                                     ERole role,
+                                     const std::wstring& endpointId,
+                                     HRESULT& outHr,
+                                     std::string& outError) override {
+        outError.clear();
+        if (!supported) {
+            outHr = E_NOINTERFACE;
+            return false;
+        }
+        if (failWrites || flow != eRender) {
+            outHr = E_ACCESSDENIED;
+            outError = "Mock policy write failure";
+            return false;
+        }
+        const std::wstring key = FindKeyByPid(pid);
+        if (key.empty()) {
+            outHr = E_INVALIDARG;
+            outError = "Unknown PID";
+            return false;
+        }
+        persistedByKey[key][role] = stagee::ExtractEndpointIdFromPolicyString(endpointId);
+        outHr = S_OK;
+        return true;
+    }
+
+private:
+    std::wstring FindKeyByPid(uint32_t pid) const {
+        for (const auto& id : liveIdentities) {
+            if (id.pid == pid) {
+                return id.identityKey;
+            }
+        }
+        return {};
+    }
+};
+
+void TestStageE2ZeroHardwareIsolation(const std::wstring& launcherExePath) {
+    std::printf("[Suite 8] Stage E2 Zero-Hardware Virtual Sink & AutoRouteController...\n");
+    const std::wstring tempRoot = MakeUniqueTempDir(L"stage_e2");
+
+    // 8a. SWD policy string helpers & identity key formatting
+    {
+        const std::wstring epGuid = L"{0.0.0.00000000}.{6aa649d5-6312-43ef-af85-e8e6b4f7db4d}";
+        const std::wstring swd = stagee::FormatSwdAudioRenderInterfaceId(epGuid);
+        CHECK(swd == L"\\\\?\\SWD#MMDEVAPI#{0.0.0.00000000}.{6aa649d5-6312-43ef-af85-e8e6b4f7db4d}#{e6327cad-dcec-4949-ae8a-991e976a79d2}");
+        CHECK(stagee::FormatSwdAudioRenderInterfaceId(swd) == swd);
+        CHECK(stagee::ExtractEndpointIdFromPolicyString(swd) == epGuid);
+        CHECK(stagee::ArePolicyEndpointStringsEqual(swd, L"{0.0.0.00000000}.{6AA649D5-6312-43EF-AF85-E8E6B4F7DB4D}"));
+        CHECK(stagee::FormatSwdAudioRenderInterfaceId(L"").empty());
+        CHECK(stagee::ExtractEndpointIdFromPolicyString(L"").empty());
+
+        const std::wstring kApp = stagee::ComputeProcessPolicyIdentityKey(
+            L"C:\\Apps\\AppleMusic.exe", L"AppleMusic.exe", L"AppleInc.AppleMusicWin_abc!App");
+        const std::wstring kLib = stagee::ComputeProcessPolicyIdentityKey(
+            L"C:\\Apps\\AMPLibraryAgent.exe", L"AMPLibraryAgent.exe", L"AppleInc.AppleMusicWin_abc!LibraryServer");
+        const std::wstring kEdge = stagee::ComputeProcessPolicyIdentityKey(
+            L"C:\\Program Files\\Edge\\msedge.exe", L"msedge.exe", L"");
+        CHECK(kApp == L"aumid:appleinc.applemusicwin_abc!app");
+        CHECK(kLib == L"aumid:appleinc.applemusicwin_abc!libraryserver");
+        CHECK(kApp != kLib);
+        CHECK(kEdge == L"exe:c:\\program files\\edge\\msedge.exe");
+    }
+
+    // 8b. SilentSinkDetector priority ranking & hazard rejection
+    {
+        staged::AudioTopologyReport topo;
+        topo.defaultConsoleEndpointId = L"ep_main";
+        topo.defaultMultimediaEndpointId = L"ep_main";
+        auto epMain = MakeMockEndpoint(L"ep_main", L"Headphones (Test Headphones)", true);
+        auto epHdmi = MakeMockEndpoint(L"ep_hdmi", L"Monitor (NVIDIA High Definition Audio)", false);
+        auto epVb   = MakeMockEndpoint(L"ep_vb",   L"CABLE Input (VB-Audio Virtual Cable)", false);
+        auto epStm  = MakeMockEndpoint(L"ep_stm",  L"扬声器 (Steam Streaming Speakers)", false);
+
+        // Only physical endpoints -> NotInstalled (never hijacks HDMI monitor!)
+        topo.endpoints = { epMain, epHdmi };
+        auto rNone = stagee::EvaluateSilentSinks(topo);
+        CHECK(rNone.presence == stagee::VirtualSinkPresence::NotInstalled);
+        CHECK(!rNone.hasSelectableSink);
+
+        // Both VB-Cable and Steam Streaming Speakers -> picks Steam Streaming Speakers (priority 100 > 80)
+        topo.endpoints = { epMain, epVb, epStm };
+        auto rBoth = stagee::EvaluateSilentSinks(topo);
+        CHECK(rBoth.presence == stagee::VirtualSinkPresence::ActiveReady);
+        CHECK(rBoth.hasSelectableSink);
+        CHECK(rBoth.selectedEndpointId == L"ep_stm");
+        CHECK(rBoth.selectedPriority == 100);
+
+        // Steam Streaming Speakers set as Windows Default -> hazard flagged & refused
+        topo.defaultMultimediaEndpointId = L"ep_stm";
+        auto epStmDefault = MakeMockEndpoint(L"ep_stm", L"Speakers (Steam Streaming Speakers)", true);
+        topo.endpoints = { epStmDefault };
+        auto rHazard = stagee::EvaluateSilentSinks(topo);
+        CHECK(rHazard.presence == stagee::VirtualSinkPresence::VirtualSinkIsSystemDefault);
+        CHECK(!rHazard.hasSelectableSink);
+    }
+
+    // 8c & 8d. Full AutoRouteController lifecycle (AppleMusic -> Edge -> UserOverride -> Exit -> Crash/Deferred Restore)
+    {
+        const std::wstring journalPath = tempRoot + L"\\iv_apple_music_radio.route_journal.json";
+
+        staged::AudioTopologyReport topo;
+        topo.defaultConsoleEndpointId = L"ep_main";
+        topo.defaultMultimediaEndpointId = L"ep_main";
+        auto epMain = MakeMockEndpoint(L"ep_main", L"耳机 (Test Headphones)", true);
+        auto epStm  = MakeMockEndpoint(L"ep_stm",  L"扬声器 (Steam Streaming Speakers)", false);
+        topo.endpoints = { epMain, epStm };
+
+        FakeAudioEndpointPolicyAccess fakePolicy;
+        const std::wstring kKeyApp  = L"aumid:appleinc.applemusicwin_nzyj5cx40ttqa!app";
+        const std::wstring kKeyLib  = L"aumid:appleinc.applemusicwin_nzyj5cx40ttqa!libraryserver";
+        const std::wstring kKeyEdge = L"exe:c:\\edge\\msedge.exe";
+        const std::wstring kKeySpot = L"exe:c:\\spotify\\spotify.exe";
+
+        fakePolicy.liveIdentities = {
+            { 101u, kKeyApp,  L"AppleMusic.exe",      L"C:\\WindowsApps\\AppleMusic.exe",      L"AppleInc.AppleMusicWin_nzyj5cx40ttqa!App",           false, false },
+            { 102u, kKeyLib,  L"AMPLibraryAgent.exe", L"C:\\WindowsApps\\AMPLibraryAgent.exe", L"AppleInc.AppleMusicWin_nzyj5cx40ttqa!LibraryServer", true,  true },
+            { 204u, kKeyEdge, L"msedge.exe",          L"C:\\Edge\\msedge.exe",                 L"",                                                   true,  true },
+        };
+        // AppleMusic!App started previously on ep_old_dac; LibraryServer was System Default (""); Edge was System Default ("")
+        fakePolicy.persistedByKey[kKeyApp][eConsole]    = L"ep_old_dac";
+        fakePolicy.persistedByKey[kKeyApp][eMultimedia] = L"ep_old_dac";
+
+        stagee::AutoRouteController ctrl;
+        stagee::AutoRouteTargetSpec appleTarget{};
+        appleTarget.isAppleMusicPreset = true;
+        appleTarget.captureTargetPid = 102u;
+
+        // 1. Reconcile in Auto mode -> isolates BOTH AppleMusic!App and !LibraryServer to ep_stm; leaves msedge untouched!
+        const auto st1 = ctrl.ReconcileDuringBridge(
+            fakePolicy, journalPath, topo, appleTarget, stagee::AutoRouteMode::Auto);
+        CHECK(st1.state == stagee::AutoRouteState::AutoIsolatedOk);
+        CHECK(st1.isolatedIdentityCount == 2u);
+        CHECK(fakePolicy.persistedByKey[kKeyApp][eConsole] == L"ep_stm");
+        CHECK(fakePolicy.persistedByKey[kKeyApp][eMultimedia] == L"ep_stm");
+        CHECK(fakePolicy.persistedByKey[kKeyLib][eConsole] == L"ep_stm");
+        CHECK(fakePolicy.persistedByKey[kKeyLib][eMultimedia] == L"ep_stm");
+        CHECK(fakePolicy.persistedByKey[kKeyEdge].empty());
+        CHECK(FileExistsW(journalPath));
+
+        // 2. EvaluateRoutingIsolation formats Stage E2 auto-isolation text cleanly
+        topo.endpoints[1].sessions.push_back(
+            MakeMockSession(epStm, 102u, L"AMPLibraryAgent.exe", L"C:\\WindowsApps\\AMPLibraryAgent.exe", AudioSessionStateActive));
+        stagee::RoutingIsolatorTracker rTrk;
+        const auto diagAutoEn = stagee::EvaluateRoutingIsolation(
+            topo, 102u, L"AMPLibraryAgent.exe", rTrk, stagee::UiLanguage::EnUs, &st1);
+        CHECK(diagAutoEn.state == stagee::RoutingIsolationState::IsolatedOk);
+        CHECK(diagAutoEn.bannerTitleUtf8.find("Auto Silent Isolation Active") != std::string::npos);
+
+        // 3. Hot switch source from Apple Music -> msedge.exe: restores AppleMusic (!App->ep_old_dac, !Lib->"") & isolates Edge -> ep_stm!
+        stagee::AutoRouteTargetSpec edgeTarget{};
+        edgeTarget.isAppleMusicPreset = false;
+        edgeTarget.customExeName = L"msedge.exe";
+        edgeTarget.customExePath = L"C:\\Edge\\msedge.exe";
+        edgeTarget.captureTargetPid = 204u;
+
+        const auto st2 = ctrl.ReconcileDuringBridge(
+            fakePolicy, journalPath, topo, edgeTarget, stagee::AutoRouteMode::Auto);
+        CHECK(st2.state == stagee::AutoRouteState::AutoIsolatedOk);
+        CHECK(st2.isolatedIdentityCount == 1u);
+        CHECK(fakePolicy.persistedByKey[kKeyApp][eConsole] == L"ep_old_dac");
+        CHECK(fakePolicy.persistedByKey[kKeyApp][eMultimedia] == L"ep_old_dac");
+        CHECK(fakePolicy.persistedByKey[kKeyLib][eConsole].empty());
+        CHECK(fakePolicy.persistedByKey[kKeyLib][eMultimedia].empty());
+        CHECK(fakePolicy.persistedByKey[kKeyEdge][eConsole] == L"ep_stm");
+        CHECK(fakePolicy.persistedByKey[kKeyEdge][eMultimedia] == L"ep_stm");
+
+        // 4. User manually edits Edge in Volume Mixer -> ep_user_bt: RestoreAllRoutes MUST preserve user choice!
+        fakePolicy.persistedByKey[kKeyEdge][eConsole]    = L"ep_user_bt";
+        fakePolicy.persistedByKey[kKeyEdge][eMultimedia] = L"ep_user_bt";
+        const auto sumUserMod = ctrl.RestoreAllRoutes(fakePolicy, journalPath, &topo, true);
+        CHECK(sumUserMod.skippedUserModifiedCount == 1u);
+        CHECK(sumUserMod.restoredCount == 0u);
+        CHECK(fakePolicy.persistedByKey[kKeyEdge][eMultimedia] == L"ep_user_bt");
+        CHECK(sumUserMod.journalEmptyAfterRestore);
+        CHECK(!FileExistsW(journalPath));
+
+        // 5. Deferred restore when target exits BEFORE Stop, then heals on RecoverOnStartup when Spotify relaunches!
+        fakePolicy.liveIdentities.push_back(
+            { 305u, kKeySpot, L"Spotify.exe", L"C:\\Spotify\\Spotify.exe", L"", true, true });
+        stagee::AutoRouteTargetSpec spotTarget{};
+        spotTarget.isAppleMusicPreset = false;
+        spotTarget.customExeName = L"Spotify.exe";
+        spotTarget.customExePath = L"C:\\Spotify\\Spotify.exe";
+        spotTarget.captureTargetPid = 305u;
+
+        const auto stSpot = ctrl.ReconcileDuringBridge(
+            fakePolicy, journalPath, topo, spotTarget, stagee::AutoRouteMode::Auto);
+        CHECK(stSpot.state == stagee::AutoRouteState::AutoIsolatedOk);
+        CHECK(fakePolicy.persistedByKey[kKeySpot][eMultimedia] == L"ep_stm");
+
+        // Spotify closes BEFORE user stops bridge -> RestoreAllRoutes marks it deferred in journal
+        fakePolicy.liveIdentities.pop_back();
+        const auto sumDeferred = ctrl.RestoreAllRoutes(fakePolicy, journalPath, &topo, true);
+        CHECK(sumDeferred.deferredCount == 1u);
+        CHECK(!sumDeferred.journalEmptyAfterRestore);
+        CHECK(FileExistsW(journalPath));
+
+        // Later, user opens Spotify and restarts Bridge -> RecoverOnStartup restores Spotify back to System Default & cleans journal!
+        fakePolicy.liveIdentities.push_back(
+            { 999u, kKeySpot, L"Spotify.exe", L"C:\\Spotify\\Spotify.exe", L"", false, false });
+        const auto sumRecovered = ctrl.RecoverOnStartup(fakePolicy, journalPath, &topo);
+        CHECK(sumRecovered.restoredCount == 1u);
+        CHECK(sumRecovered.journalEmptyAfterRestore);
+        CHECK(fakePolicy.persistedByKey[kKeySpot][eConsole].empty());
+        CHECK(fakePolicy.persistedByKey[kKeySpot][eMultimedia].empty());
+        CHECK(!FileExistsW(journalPath));
+
+        // 6. Self-healing: if process already points to ep_stm with NO journal (e.g. journal deleted), orig falls back to "" Default
+        fakePolicy.persistedByKey[kKeySpot][eConsole] = L"ep_stm";
+        fakePolicy.persistedByKey[kKeySpot][eMultimedia] = L"ep_stm";
+        (void)ctrl.ReconcileDuringBridge(fakePolicy, journalPath, topo, spotTarget, stagee::AutoRouteMode::Auto);
+        const auto sumHealed = ctrl.RestoreAllRoutes(fakePolicy, journalPath, &topo, true);
+        CHECK(sumHealed.restoredCount == 1u);
+        CHECK(fakePolicy.persistedByKey[kKeySpot][eMultimedia].empty());
+    }
+
+    // 8e. LauncherSettings v2 -> v3 upgrade & AutoRouteMode persistence
+    {
+        std::string err;
+        stagee::LauncherSettings loaded{};
+        const std::wstring v2Legacy = tempRoot + L"\\v2_upgrade.settings.json";
+        CHECK(staged::WriteTextFileAtomic(
+            v2Legacy,
+            "{\n  \"version\": 2,\n  \"language\": \"zh\",\n  \"source_mode\": \"apple_music\"\n}\n",
+            err));
+        CHECK(stagee::LoadLauncherSettings(v2Legacy, loaded, err));
+        CHECK(loaded.autoRouteMode == stagee::AutoRouteMode::Auto); // Default Auto!
+
+        const std::wstring v3Path = tempRoot + L"\\v3_manual.settings.json";
+        loaded.autoRouteMode = stagee::AutoRouteMode::Manual;
+        CHECK(stagee::SaveLauncherSettings(v3Path, loaded, err));
+        stagee::LauncherSettings reloaded{};
+        CHECK(stagee::LoadLauncherSettings(v3Path, reloaded, err));
+        CHECK(reloaded.autoRouteMode == stagee::AutoRouteMode::Manual);
+    }
+
+    // 8f. Route A WHQL driver package verification (missing/tamper-reject + host probe) & Win32 AudioPolicyConfig live COM probe
+    {
+        const auto missingPkg = stagee::LocateAndVerifyVirtualSinkPackage(tempRoot + L"\\no_such_driver_dir");
+        CHECK(!missingPkg.found);
+        CHECK(!missingPkg.integrityValid);
+
+        const std::wstring fakeDrvDir = tempRoot + L"\\tampered_driver";
+        CHECK(CreateDirectoryW(fakeDrvDir.c_str(), nullptr) != FALSE || GetLastError() == ERROR_ALREADY_EXISTS);
+        std::string err;
+        CHECK(staged::WriteTextFileAtomic(fakeDrvDir + L"\\SteamStreamingSpeakers.inf", "tampered inf", err));
+        CHECK(staged::WriteTextFileAtomic(fakeDrvDir + L"\\SteamStreamingSpeakers.sys", "tampered sys", err));
+        CHECK(staged::WriteTextFileAtomic(fakeDrvDir + L"\\steamstreamingspeakers.cat", "tampered cat", err));
+        const auto tamperedPkg = stagee::LocateAndVerifyVirtualSinkPackage(fakeDrvDir);
+        CHECK(tamperedPkg.found);
+        CHECK(!tamperedPkg.integrityValid);
+        CHECK(tamperedPkg.errorDetail.find("SHA-256 mismatch") != std::string::npos);
+
+        const auto autoPkg = stagee::LocateAndVerifyVirtualSinkPackage();
+        if (autoPkg.found) {
+            CHECK(autoPkg.integrityValid);
+        }
+
+        stagee::Win32AudioPolicyConfigAccess livePolicy;
+        std::string reason;
+        const bool policySupported = livePolicy.IsSupported(reason);
+        if (!policySupported) {
+            std::fprintf(stderr, "  livePolicy.IsSupported failed reason: %s\n", reason.c_str());
+        }
+        CHECK(policySupported);
+
+        if (!launcherExePath.empty() && FileExistsW(launcherExePath)) {
+            std::wstring cmd = L"\"" + launcherExePath + L"\" --restore-routes --quiet --config-path \"" +
+                               tempRoot + L"\\unused.settings.json\"";
+            std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+            cmdBuf.push_back(L'\0');
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            PROCESS_INFORMATION pi{};
+            CHECK(CreateProcessW(launcherExePath.c_str(), cmdBuf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi) != FALSE);
+            if (pi.hProcess) {
+                CHECK(WaitForSingleObject(pi.hProcess, 5000u) == WAIT_OBJECT_0);
+                DWORD exitCode = 99u;
+                GetExitCodeProcess(pi.hProcess, &exitCode);
+                CHECK(exitCode == 0u);
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            }
+        }
+    }
+
+    DeleteDirectoryTreeTestOnly(tempRoot);
+}
+
 } // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
@@ -1553,7 +1907,7 @@ int wmain(int argc, wchar_t* argv[]) {
         }
     }
 
-    std::printf("=== Stage E1 Offline Self-Test Suite ===\n");
+    std::printf("=== Stage E1/E2 Offline Self-Test Suite ===\n");
     TestRollingLevelMeter();
     TestRoutingIsolationClassifier();
     TestSilenceAndPipelineClassifier();
@@ -1561,6 +1915,7 @@ int wmain(int argc, wchar_t* argv[]) {
     TestEngineAndLauncherProcess(launcherExePath);
     TestLocalizationAndSettings(launcherExePath);
     TestStreamAnythingAndHotSwap(launcherExePath);
+    TestStageE2ZeroHardwareIsolation(launcherExePath);
 
     std::printf("=== Stage E1 Summary: %d/%d checks passed (%d failed) ===\n",
                 g_totalChecks - g_failedChecks,

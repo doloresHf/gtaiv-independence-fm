@@ -4,6 +4,7 @@
 #include <commdlg.h>
 #include <objbase.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <windows.h>
 
 #include <algorithm>
@@ -49,14 +50,19 @@ constexpr int kIdMenuUsageGuide     = 4007;
 constexpr int kIdMenuAbout          = 4008;
 
 // Modal dialog child control IDs
-constexpr int kIdDlgLangCombo       = 5001;
-constexpr int kIdDlgGuideEdit       = 5002;
-constexpr int kIdDlgOpenMixer       = 5003;
-constexpr int kIdDlgRadioAppleMusic = 5004;
-constexpr int kIdDlgRadioCustomApp  = 5005;
-constexpr int kIdDlgSourceAppCombo  = 5006;
-constexpr int kIdDlgBtnRefreshApps  = 5007;
-constexpr int kIdDlgBtnBrowseExe    = 5008;
+constexpr int kIdDlgLangCombo         = 5001;
+constexpr int kIdDlgGuideEdit         = 5002;
+constexpr int kIdDlgOpenMixer         = 5003;
+constexpr int kIdDlgRadioAppleMusic   = 5004;
+constexpr int kIdDlgRadioCustomApp    = 5005;
+constexpr int kIdDlgSourceAppCombo    = 5006;
+constexpr int kIdDlgBtnRefreshApps    = 5007;
+constexpr int kIdDlgBtnBrowseExe      = 5008;
+constexpr int kIdDlgChkAutoRoute      = 5009;
+constexpr int kIdDlgLblSinkStatus     = 5010;
+constexpr int kIdDlgBtnInstallSink    = 5011;
+constexpr int kIdDlgBtnUninstallSink  = 5012;
+constexpr int kIdDlgBtnRestoreRoutes  = 5013;
 
 constexpr int kBaseClientWidth      = 620;
 constexpr int kBaseClientHeight     = 468;
@@ -172,6 +178,24 @@ struct UiStrings {
     const wchar_t* settingsSaveFailedTitle;
     const wchar_t* settingsSaveFailedPrefix;
 
+    // Virtual Silent Sink & Auto Isolation settings (Route A public release)
+    const wchar_t* settingsGroupIsolation;
+    const wchar_t* settingsChkAutoRoute;
+    const wchar_t* settingsBtnInstallSink;
+    const wchar_t* settingsBtnRepairSink;
+    const wchar_t* settingsBtnUninstallSink;
+    const wchar_t* settingsBtnRestoreRoutes;
+    const wchar_t* settingsSinkReadyFmt;
+    const wchar_t* settingsSinkNotInstalled;
+    const wchar_t* settingsSinkDefaultHazardFmt;
+    const wchar_t* settingsSinkActionTitle;
+    const wchar_t* settingsSinkInstallOkFmt;
+    const wchar_t* settingsSinkUninstallOk;
+    const wchar_t* settingsSinkActionFailFmt;
+    const wchar_t* settingsRestoreSummaryFmt;
+    const wchar_t* settingsSinkRouteAPromptBody;
+    const wchar_t* settingsSinkPickFolderTitle;
+
     // Usage guide & About dialogs
     const wchar_t* guideWindowTitle;
     const wchar_t* guideHeaderTitle;
@@ -262,15 +286,34 @@ const UiStrings& GetUiStrings(stagee::UiLanguage lang) noexcept {
         L"保存设置失败",
         L"无法写入配置文件，本次修改仅在当前运行期间生效：\n",
 
+        L"无硬件静音隔离 — 虚拟静音端点 (Virtual Silent Sink)",
+        L"启动桥接时自动将音源切换至虚拟静音端点（停止/退出或换源时自动恢复外放）",
+        L"安装/导入虚拟端点",
+        L"修复 / 更新虚拟端点",
+        L"卸载虚拟静音端点",
+        L"立即恢复音源外放",
+        L"虚拟端点状态：已就绪 [%ls]（系统主耳机/音箱默认输出不受影响）",
+        L"虚拟端点状态：未检测到（支持自动复用已装的 Steam Streaming Speakers / VB-Cable，或点下方导入/安装）。",
+        L"警告：[%ls] 被设为系统默认输出，请先在系统声音设置把实体耳机/音箱设回默认设备！",
+        L"虚拟静音端点操作",
+        L"已完成虚拟静音端点配置：[%ls]\n\n• 微软 WHQL 数字签名校验与驱动 SHA-256 核验通过\n• 原有系统默认输出/输入设备保持不变（未劫持全局声卡）",
+        L"已卸载 Steam Streaming Speakers 虚拟静音端点设备。",
+        L"操作未完成：%ls",
+        L"已恢复隔离路由（恢复：%u，跳过手动更改：%u，待重连恢复：%u，失败：%u）",
+        L"未在本机检测到 SteamStreamingSpeakers 驱动包（公开发布包不包含 Valve 专有二进制）。\n\n"
+        L"• 点“是 (Yes)”：手动选择包含 SteamStreamingSpeakers.inf / .sys / .cat 的本地文件夹，经 SHA-256 校验后自动安装；\n"
+        L"• 点“否 (No)”：打开免费的 VB-Audio Virtual Cable 官网下载虚拟声卡（装完记得把系统默认设备改回主耳机/音箱，本工具会自动复用它）；\n"
+        L"• 点“取消 (Cancel)”：暂不安装（如已有副物理输出，也可手动路由）。",
+        L"选择包含 SteamStreamingSpeakers WHQL 驱动的文件夹",
+
         L"使用说明 — GTA IV Independence FM — Audio Bridge",
         L"GTA IV Independence FM — Audio Bridge 快速上手说明",
         L"【1. 三步开始收听（支持 Apple Music 与兼容的 Windows 音频应用）】\r\n"
-        L"  ① 运行本程序 iv_apple_music_radio.exe（默认自动开启桥接并驻留系统托盘）。\r\n"
-        L"  ② 默认自动捕获 Windows 版 Apple Music；若需接入其他兼容的音频程序，请打开『选项 -> 设置 (Ctrl+,)』切换至『自定义发声程序 (Stream Anything)』。\r\n"
-        L"  ③ 在 GTA IV 的声音设置中执行完整音乐扫描，驾驶车辆并将车载电台切至『Independence FM』即可收听。\r\n\r\n"
-        L"【2. 双音频设备防重音（必设，消除车外双重音乐声）】\r\n"
-        L"  • 若发声程序与 GTA IV 共用同一耳机/音箱，你既会听到桌面直出的原声，又会听到游戏车内的电台声。\r\n"
-        L"  • 解决方法：点击下方『打开系统音量合成器』，保持 GTA IV 为默认耳机/音箱，将音源指向活动的副输出（如 HDMI 或 USB 音频）。保持 Windows 中应用未静音，使用物理上不出声的副输出。\r\n\r\n"
+        L"  ① 在『选项 -> 设置 (Ctrl+,)』确认「无硬件静音隔离」已就绪（自动复用本机 Steam Streaming Speakers 或 VB-Cable 等虚拟静音端点；未安装可点击按钮导入本地 WHQL 驱动或获取 VB-Cable）。\r\n"
+        L"  ② 默认自动捕获 Windows 版 Apple Music；若需接入其他兼容的音频程序，请在『设置』切换至『自定义发声程序 (Stream Anything)』。\r\n"
+        L"  ③ 在 GTA IV 的声音设置中执行一次「完整扫描音乐」，驾驶车辆并将车载电台切至『Independence FM』：桥接期间会自动隔离音源消除桌面重音，停止或退出后自动恢复外放。\r\n\r\n"
+        L"【2. 兼容双实体输出手动路由（可选）】\r\n"
+        L"  • 如暂不安装虚拟静音端点，可在『设置』取消自动隔离，点击下方『打开系统音量合成器』保持 GTA IV 为默认耳机/音箱，将音源指向物理上不出声的活动副输出（如 HDMI 或副 USB 音频）。保持 Windows 中应用未静音。\r\n\r\n"
         L"【3. 音频格式注意事项（杜比全景声与独占模式）】\r\n"
         L"  • Apple Music 用户：请在『设置 -> 播放 -> 杜比全景声 (Dolby Atmos)』中设为『关闭』。\r\n"
         L"  • 自定义播放器用户：请使用默认共享音频输出（Shared WASAPI / DirectSound），切勿开启 WASAPI 独占 (Exclusive) 或 ASIO（独占流绕过系统混音器，无法被按进程环回捕获）。\r\n\r\n"
@@ -280,7 +323,7 @@ const UiStrings& GetUiStrings(stagee::UiLanguage lang) noexcept {
         L"【5. 状态指示灯与托盘说明】\r\n"
         L"  • 绿色：车内正常供音且音频路由已隔离  |  蓝色：就绪待命（未上车切台或已暂停）\r\n"
         L"  • 橙色：单端点/路由待确认或曲间弱音  |  红色：路由重叠外放、持续无声或互斥冲突\r\n"
-        L"  • 点击窗口右上角 [×] 仅最小化到系统托盘；结束游玩请点击『退出程序』以安全刷空缓冲。",
+        L"  • 点击窗口右上角 [×] 仅最小化到系统托盘；结束游玩请点击『退出程序』以安全刷空缓冲并自动恢复原音频设备。",
         L"打开系统音量合成器",
         L"关闭",
         L"关于 — GTA IV Independence FM — Audio Bridge",
@@ -366,15 +409,34 @@ const UiStrings& GetUiStrings(stagee::UiLanguage lang) noexcept {
         L"Failed to Save Settings",
         L"Could not write settings file; changes apply to this session only:\n",
 
+        L"Zero-Hardware Silent Isolation (Virtual Silent Sink)",
+        L"Auto-route target app to virtual silent sink (auto-restore speakers on stop/exit)",
+        L"Install / Import Sink",
+        L"Repair Virtual Sink",
+        L"Uninstall Sink",
+        L"Restore App Audio",
+        L"Virtual Sink Status: Ready [%ls] (Your main headphones/speakers remain default)",
+        L"Virtual Sink Status: None detected (auto-reuses Steam Streaming Speakers / VB-Cable, or click below to import/get one).",
+        L"Hazard: [%ls] is currently set as Windows Default Output! Please set your real speakers/headphones as default first.",
+        L"Virtual Silent Sink",
+        L"Virtual silent sink is ready: [%ls]\n\n• Verified WHQL catalog & SHA-256 package integrity\n• Preserved your existing Windows default playback/recording endpoints",
+        L"Removed Steam Streaming Speakers virtual audio device and driver package cleanly.",
+        L"Operation incomplete: %ls",
+        L"Route recovery completed (restored: %u, kept manual changes: %u, deferred/exited apps: %u, failed: %u)",
+        L"No local SteamStreamingSpeakers WHQL driver package was found automatically (the public release does not bundle Valve proprietary binaries).\n\n"
+        L"• Click Yes: Browse for a local folder containing SteamStreamingSpeakers.inf / .sys / .cat to verify SHA-256 and install;\n"
+        L"• Click No: Open the free VB-Audio Virtual Cable website to install a virtual sink (remember to switch Windows default playback back to your main speakers afterward);\n"
+        L"• Click Cancel: Keep current settings (manual split-endpoint routing remains available).",
+        L"Select folder containing SteamStreamingSpeakers WHQL driver files",
+
         L"Quick Start Guide — GTA IV Independence FM — Audio Bridge",
         L"GTA IV Independence FM — Audio Bridge Quick Start Guide",
         L"[1. Three Steps to Listen (Apple Music & Stream Anything)]\r\n"
-        L"  1) Launch iv_apple_music_radio.exe (auto-starts the bridge and stays in the system tray).\r\n"
-        L"  2) Apple Music for Windows is captured automatically out of the box. To stream from another compatible Windows audio app, open 'Options -> Settings (Ctrl+,)' and select 'Custom Audio App (Stream Anything)'.\r\n"
-        L"  3) Run Complete Scan for Music in GTA IV, enter a vehicle and tune the radio to 'Independence FM'.\r\n\r\n"
-        L"[2. Split-Endpoint Routing (Required to Prevent Double Audio)]\r\n"
-        L"  • If your music app and GTA IV share the same speakers/headphones, you will hear desktop audio on top of the in-car radio.\r\n"
-        L"  • Fix: Click 'Open Volume Mixer' below. Keep GTA IV on your main headphones/speakers, and assign your music app's Output Device to an active secondary output (for example HDMI or USB audio). Keep the app unmuted in Windows; choose a physically quiet output.\r\n\r\n"
+        L"  1) Open 'Options -> Settings (Ctrl+,)' and check Zero-Hardware Silent Isolation (auto-reuses an installed Steam Streaming Speakers or VB-Cable virtual sink, or lets you import a local WHQL driver / install VB-Cable).\r\n"
+        L"  2) Apple Music for Windows is captured automatically out of the box. To stream from another compatible Windows audio app, choose 'Custom Audio App (Stream Anything)' in Settings.\r\n"
+        L"  3) Run Complete Scan for Music in GTA IV, enter a vehicle and tune to 'Independence FM': the music app is isolated automatically during play and restored when you stop or exit.\r\n\r\n"
+        L"[2. Optional Manual Split-Endpoint Routing]\r\n"
+        L"  • Prefer manual physical routing? Uncheck auto-isolation in Settings and click 'Open Volume Mixer' below to keep GTA IV on your main headphones/speakers while routing the player to a physically quiet secondary active output (e.g. HDMI or secondary USB DAC). Keep the app unmuted in Windows.\r\n\r\n"
         L"[3. Audio Format Notes (Dolby Atmos & Exclusive Mode)]\r\n"
         L"  • Apple Music: Go to 'Settings -> Playback -> Dolby Atmos' and set it to 'Off'.\r\n"
         L"  • Custom Players: Keep standard Shared WASAPI / DirectSound output enabled. Do NOT enable WASAPI Exclusive or ASIO (exclusive streams bypass the Windows audio engine and cannot be captured via process loopback).\r\n\r\n"
@@ -384,7 +446,7 @@ const UiStrings& GetUiStrings(stagee::UiLanguage lang) noexcept {
         L"[5. Status Colors & System Tray]\r\n"
         L"  • Green: Streaming cleanly in-game with isolated routing  |  Blue: Ready / Paused / Waiting for radio\r\n"
         L"  • Amber: Single-endpoint / routing unconfirmed or brief quiet passage  |  Red: Routing overlap / Silence / Conflict\r\n"
-        L"  • Clicking [×] minimizes to the system tray. Use 'Exit App' when done playing to flush the shared buffer cleanly.",
+        L"  • Clicking [×] minimizes to the system tray. Use 'Exit App' when done playing to flush the shared buffer and restore audio routing cleanly.",
         L"Open Volume Mixer",
         L"Close",
         L"About — GTA IV Independence FM — Audio Bridge",
@@ -398,6 +460,14 @@ struct LauncherCliOptions {
     bool startMinimized = false;
     bool autoStart = true;
     bool showHelp = false;
+    bool quiet = false;
+
+    bool installVirtualSink = false;
+    bool uninstallVirtualSink = false;
+    bool restoreRoutesOnly = false;
+    bool noAutoRouteOverride = false;
+    std::wstring driverDir;
+    std::wstring reportJsonPath;
 
     std::wstring configFilePath;
     bool hasCliLanguageOverride = false;
@@ -455,6 +525,20 @@ bool ParseCommandLineOptions(LauncherCliOptions& opts, std::string& outError) {
             opts.showHelp = true;
         } else if (arg == L"--headless") {
             opts.headless = true;
+        } else if (arg == L"--quiet" || arg == L"-q") {
+            opts.quiet = true;
+        } else if (arg == L"--install-virtual-sink") {
+            opts.installVirtualSink = true;
+        } else if (arg == L"--uninstall-virtual-sink") {
+            opts.uninstallVirtualSink = true;
+        } else if (arg == L"--restore-routes") {
+            opts.restoreRoutesOnly = true;
+        } else if (arg == L"--no-auto-route") {
+            opts.noAutoRouteOverride = true;
+        } else if (arg == L"--driver-dir" && i + 1 < argc) {
+            opts.driverDir = argv[++i];
+        } else if (arg == L"--report-json" && i + 1 < argc) {
+            opts.reportJsonPath = argv[++i];
         } else if (arg == L"--start-minimized" || arg == L"--tray-only") {
             opts.startMinimized = true;
         } else if (arg == L"--no-auto-start") {
@@ -852,8 +936,10 @@ struct SettingsDialogState {
     stagee::UiLanguage effectiveUiLang = stagee::UiLanguage::ZhCn;
     const UiStrings* ui = nullptr;
     std::wstring configPath;
+    std::wstring routeJournalPath;
     stagee::UiLanguage selectedLanguage = stagee::UiLanguage::Auto;
     stagee::AudioSourceConfig selectedSource{};
+    stagee::AutoRouteMode selectedAutoRouteMode = stagee::AutoRouteMode::Auto;
     std::wstring rememberedCustomExeName;
     std::wstring rememberedCustomExePath;
     std::vector<SourcePickerItem> pickerItems;
@@ -866,6 +952,11 @@ struct SettingsDialogState {
     HWND comboSourceApps = nullptr;
     HWND btnRefreshApps = nullptr;
     HWND btnBrowseExe = nullptr;
+    HWND chkAutoRoute = nullptr;
+    HWND lblSinkStatus = nullptr;
+    HWND btnInstallSink = nullptr;
+    HWND btnUninstallSink = nullptr;
+    HWND btnRestoreRoutes = nullptr;
     HFONT fontBold = nullptr;
     HFONT fontBody = nullptr;
     HFONT fontSmall = nullptr;
@@ -902,6 +993,269 @@ void SyncSettingsSourceControls(SettingsDialogState* st) noexcept {
         // Keep Browse always enabled so clicking it can auto-switch to Custom Audio App seamlessly
         EnableWindow(st->btnBrowseExe, TRUE);
     }
+}
+
+void RefreshSettingsAudioSessions(SettingsDialogState* st);
+
+bool IsCurrentProcessElevated() noexcept {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+    TOKEN_ELEVATION elev{};
+    DWORD retLen = 0u;
+    const BOOL ok = GetTokenInformation(token, TokenElevation, &elev, sizeof(elev), &retLen);
+    CloseHandle(token);
+    return ok && (elev.TokenIsElevated != 0);
+}
+
+std::string ExtractJsonFieldQuick(const std::string& json, const char* key) {
+    const std::string token = std::string("\"") + key + "\": \"";
+    const size_t pos = json.find(token);
+    if (pos == std::string::npos) return {};
+    size_t i = pos + token.size();
+    std::string raw;
+    while (i < json.size()) {
+        const char c = json[i++];
+        if (c == '\\' && i < json.size()) {
+            raw.push_back('\\');
+            raw.push_back(json[i++]);
+        } else if (c == '"') {
+            break;
+        } else {
+            raw.push_back(c);
+        }
+    }
+    std::string decoded;
+    std::string err;
+    if (!staged::UnescapeJsonString(raw, decoded, err)) {
+        return raw;
+    }
+    return decoded;
+}
+
+std::wstring PickVirtualSinkDriverFolder(HWND hwnd, const wchar_t* title) {
+    BROWSEINFOW bi{};
+    bi.hwndOwner = hwnd;
+    bi.lpszTitle = title;
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) {
+        return {};
+    }
+    wchar_t pathBuf[MAX_PATH * 4]{};
+    const BOOL ok = SHGetPathFromIDListW(pidl, pathBuf);
+    CoTaskMemFree(pidl);
+    return ok ? std::wstring(pathBuf) : std::wstring();
+}
+
+void RefreshVirtualSinkControls(SettingsDialogState* st) {
+    if (!st || !st->ui) {
+        return;
+    }
+    const UiStrings& s = *st->ui;
+
+    staged::AudioTopologyReport topo;
+    std::string topoErr;
+    staged::DiscoverAudioTopology(topo, topoErr);
+    const stagee::SilentSinkReport sinkRep = stagee::EvaluateSilentSinks(topo);
+    const bool steamDevNodePresent = stagee::IsVirtualAudioSinkDevicePresent();
+
+    std::wstring statusLine;
+    if (sinkRep.presence == stagee::VirtualSinkPresence::VirtualSinkIsSystemDefault) {
+        const std::wstring nameW = sinkRep.selectedFriendlyName.empty()
+            ? std::wstring(L"Steam Streaming Speakers")
+            : sinkRep.selectedFriendlyName;
+        wchar_t buf[512]{};
+        std::swprintf(buf, std::size(buf), s.settingsSinkDefaultHazardFmt, nameW.c_str());
+        statusLine = buf;
+    } else if (sinkRep.presence == stagee::VirtualSinkPresence::ActiveReady &&
+               !sinkRep.selectedFriendlyName.empty()) {
+        wchar_t buf[512]{};
+        std::swprintf(buf, std::size(buf), s.settingsSinkReadyFmt, sinkRep.selectedFriendlyName.c_str());
+        statusLine = buf;
+    } else {
+        statusLine = s.settingsSinkNotInstalled;
+    }
+
+    if (st->lblSinkStatus) {
+        SetWindowTextW(st->lblSinkStatus, statusLine.c_str());
+    }
+    if (st->btnInstallSink) {
+        SetWindowTextW(st->btnInstallSink,
+                       steamDevNodePresent ? s.settingsBtnRepairSink : s.settingsBtnInstallSink);
+    }
+    if (st->btnUninstallSink) {
+        EnableWindow(st->btnUninstallSink, steamDevNodePresent ? TRUE : FALSE);
+    }
+}
+
+void HandleVirtualSinkSetupClick(HWND hwnd, SettingsDialogState* st, bool install) {
+    if (!st || !st->ui) {
+        return;
+    }
+    const UiStrings& s = *st->ui;
+
+    std::wstring resolvedDriverDir;
+    if (install) {
+        stagee::VirtualSinkDriverPackage pkg = stagee::LocateAndVerifyVirtualSinkPackage();
+        if (!pkg.found) {
+            const int choice = MessageBoxW(
+                hwnd,
+                s.settingsSinkRouteAPromptBody,
+                s.settingsSinkActionTitle,
+                MB_YESNOCANCEL | MB_ICONINFORMATION);
+            if (choice == IDNO) {
+                ShellExecuteW(hwnd, L"open", L"https://vb-audio.com/Cable/", nullptr, nullptr, SW_SHOWNORMAL);
+                return;
+            }
+            if (choice != IDYES) {
+                return;
+            }
+            const std::wstring picked = PickVirtualSinkDriverFolder(hwnd, s.settingsSinkPickFolderTitle);
+            if (picked.empty()) {
+                return;
+            }
+            pkg = stagee::LocateAndVerifyVirtualSinkPackage(picked);
+        }
+        if (!pkg.found || !pkg.integrityValid) {
+            const std::wstring errW = staged::Utf8ToWide(pkg.errorDetail);
+            wchar_t failBuf[640]{};
+            std::swprintf(failBuf, std::size(failBuf), s.settingsSinkActionFailFmt,
+                          errW.empty() ? L"Invalid virtual audio driver package" : errW.c_str());
+            MessageBoxW(hwnd, failBuf, s.settingsSinkActionTitle, MB_ICONWARNING | MB_OK);
+            return;
+        }
+        resolvedDriverDir = pkg.directory;
+    }
+
+    wchar_t tmpDir[MAX_PATH]{};
+    GetTempPathW(static_cast<DWORD>(std::size(tmpDir)), tmpDir);
+    LARGE_INTEGER qpc{};
+    QueryPerformanceCounter(&qpc);
+    wchar_t repBuf[MAX_PATH * 2]{};
+    std::swprintf(repBuf, std::size(repBuf), L"%lsiv_vsink_rep_%lu_%llu.json",
+                  tmpDir, static_cast<unsigned long>(GetCurrentProcessId()),
+                  static_cast<unsigned long long>(qpc.QuadPart));
+    const std::wstring repPath(repBuf);
+
+    bool actionSucceeded = false;
+    std::string detailUtf8;
+    std::string friendlyUtf8;
+
+    if (IsCurrentProcessElevated()) {
+        const stagee::VirtualSinkInstallResult res = install
+            ? stagee::InstallVirtualAudioSink(resolvedDriverDir, repPath)
+            : stagee::UninstallVirtualAudioSink(repPath);
+        actionSucceeded = res.succeeded;
+        detailUtf8 = res.detailUtf8;
+        friendlyUtf8 = res.virtualSinkFriendlyNameUtf8;
+    } else {
+        wchar_t exePath[MAX_PATH * 4]{};
+        GetModuleFileNameW(nullptr, exePath, static_cast<DWORD>(std::size(exePath)));
+        std::wstring params = std::wstring(install ? L"--install-virtual-sink" : L"--uninstall-virtual-sink") +
+                              L" --quiet --report-json \"" + repPath + L"\"";
+        if (install && !resolvedDriverDir.empty()) {
+            params += L" --driver-dir \"" + resolvedDriverDir + L"\"";
+        }
+
+        SHELLEXECUTEINFOW sei{};
+        sei.cbSize = sizeof(sei);
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+        sei.hwnd = hwnd;
+        sei.lpVerb = L"runas";
+        sei.lpFile = exePath;
+        sei.lpParameters = params.c_str();
+        sei.nShow = SW_HIDE;
+
+        if (!ShellExecuteExW(&sei)) {
+            const DWORD err = GetLastError();
+            if (err == ERROR_CANCELLED) {
+                return;
+            }
+            wchar_t errMsg[256]{};
+            const std::wstring errStr = L"UAC launch failed (err=" + std::to_wstring(err) + L")";
+            std::swprintf(errMsg, std::size(errMsg), s.settingsSinkActionFailFmt, errStr.c_str());
+            MessageBoxW(hwnd, errMsg, s.settingsSinkActionTitle, MB_ICONWARNING | MB_OK);
+            return;
+        }
+
+        if (sei.hProcess) {
+            HCURSOR oldCur = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+            while (true) {
+                const DWORD waitRes = MsgWaitForMultipleObjects(1u, &sei.hProcess, FALSE, 100u, QS_ALLINPUT);
+                if (waitRes == WAIT_OBJECT_0) {
+                    break;
+                }
+                MSG msg{};
+                while (PeekMessageW(&msg, nullptr, 0u, 0u, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+            SetCursor(oldCur);
+            DWORD exitCode = 1u;
+            GetExitCodeProcess(sei.hProcess, &exitCode);
+            CloseHandle(sei.hProcess);
+            actionSucceeded = (exitCode == 0u);
+        }
+
+        std::string repJson;
+        std::string readErr;
+        if (staged::ReadTextFileUtf8(repPath, repJson, readErr)) {
+            detailUtf8 = ExtractJsonFieldQuick(repJson, "detail");
+            friendlyUtf8 = ExtractJsonFieldQuick(repJson, "virtual_sink_friendly_name");
+            if (repJson.find("\"succeeded\": true") != std::string::npos) {
+                actionSucceeded = true;
+            }
+        }
+    }
+    DeleteFileW(repPath.c_str());
+
+    RefreshVirtualSinkControls(st);
+    RefreshSettingsAudioSessions(st);
+
+    if (actionSucceeded) {
+        if (install) {
+            const std::wstring dispName = friendlyUtf8.empty()
+                ? std::wstring(L"Steam Streaming Speakers")
+                : staged::Utf8ToWide(friendlyUtf8);
+            wchar_t okBuf[640]{};
+            std::swprintf(okBuf, std::size(okBuf), s.settingsSinkInstallOkFmt, dispName.c_str());
+            MessageBoxW(hwnd, okBuf, s.settingsSinkActionTitle, MB_ICONINFORMATION | MB_OK);
+        } else {
+            MessageBoxW(hwnd, s.settingsSinkUninstallOk, s.settingsSinkActionTitle, MB_ICONINFORMATION | MB_OK);
+        }
+    } else {
+        const std::wstring errW = detailUtf8.empty()
+            ? std::wstring(L"Unknown error")
+            : staged::Utf8ToWide(detailUtf8);
+        wchar_t failBuf[640]{};
+        std::swprintf(failBuf, std::size(failBuf), s.settingsSinkActionFailFmt, errW.c_str());
+        MessageBoxW(hwnd, failBuf, s.settingsSinkActionTitle, MB_ICONWARNING | MB_OK);
+    }
+}
+
+void HandleRestoreRoutesClick(HWND hwnd, SettingsDialogState* st) {
+    if (!st || !st->ui) {
+        return;
+    }
+    const UiStrings& s = *st->ui;
+    const stagee::RouteRestoreSummary sum =
+        stagee::StageEBridgeEngine::RestoreAllAutoRoutesNow(st->routeJournalPath);
+    RefreshVirtualSinkControls(st);
+    RefreshSettingsAudioSessions(st);
+
+    wchar_t msg[512]{};
+    std::swprintf(msg,
+                  std::size(msg),
+                  s.settingsRestoreSummaryFmt,
+                  static_cast<unsigned>(sum.restoredCount),
+                  static_cast<unsigned>(sum.skippedUserModifiedCount),
+                  static_cast<unsigned>(sum.deferredCount),
+                  static_cast<unsigned>(sum.failedCount));
+    MessageBoxW(hwnd, msg, s.settingsSinkActionTitle,
+                sum.failedCount > 0u ? (MB_ICONWARNING | MB_OK) : (MB_ICONINFORMATION | MB_OK));
 }
 
 void RefreshSettingsAudioSessions(SettingsDialogState* st) {
@@ -1165,19 +1519,76 @@ LRESULT CALLBACK SettingsDialogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             RefreshSettingsAudioSessions(st);
             SyncSettingsSourceControls(st);
 
+            // Group 3: Zero-Hardware Silent Isolation (Virtual Silent Sink)
+            HWND grpIso = CreateWindowExW(
+                0, L"BUTTON", s.settingsGroupIsolation,
+                WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                pad, ScalePx(336, dpi), innerW, ScalePx(120, dpi),
+                hwnd, nullptr, st->hInst, nullptr);
+            SendMessageW(grpIso, WM_SETFONT, reinterpret_cast<WPARAM>(st->fontBold), TRUE);
+
+            st->chkAutoRoute = CreateWindowExW(
+                0, L"BUTTON", s.settingsChkAutoRoute,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                pad + ScalePx(14, dpi), ScalePx(358, dpi), innerW - ScalePx(28, dpi), ScalePx(22, dpi),
+                hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdDlgChkAutoRoute)), st->hInst, nullptr);
+            SendMessageW(st->chkAutoRoute, WM_SETFONT, reinterpret_cast<WPARAM>(st->fontBody), TRUE);
+            SendMessageW(
+                st->chkAutoRoute,
+                BM_SETCHECK,
+                (st->selectedAutoRouteMode == stagee::AutoRouteMode::Auto) ? BST_CHECKED : BST_UNCHECKED,
+                0);
+
+            st->lblSinkStatus = CreateWindowExW(
+                0, L"STATIC", s.settingsSinkNotInstalled,
+                WS_CHILD | WS_VISIBLE | SS_LEFT,
+                pad + ScalePx(14, dpi), ScalePx(384, dpi), innerW - ScalePx(28, dpi), ScalePx(30, dpi),
+                hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdDlgLblSinkStatus)), st->hInst, nullptr);
+            SendMessageW(st->lblSinkStatus, WM_SETFONT, reinterpret_cast<WPARAM>(st->fontSmall), TRUE);
+
+            const int isoGap = ScalePx(8, dpi);
+            const int isoBtnY = ScalePx(418, dpi);
+            const int isoBtnH = ScalePx(28, dpi);
+            const int installW = ScalePx(164, dpi);
+            const int uninstallW = ScalePx(132, dpi);
+            const int restoreW = std::max<int>(ScalePx(120, dpi), rowInnerW - installW - uninstallW - 2 * isoGap);
+
+            st->btnInstallSink = CreateWindowExW(
+                0, L"BUTTON", s.settingsBtnInstallSink,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                rowX, isoBtnY, installW, isoBtnH,
+                hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdDlgBtnInstallSink)), st->hInst, nullptr);
+            SendMessageW(st->btnInstallSink, WM_SETFONT, reinterpret_cast<WPARAM>(st->fontBody), TRUE);
+
+            st->btnUninstallSink = CreateWindowExW(
+                0, L"BUTTON", s.settingsBtnUninstallSink,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                rowX + installW + isoGap, isoBtnY, uninstallW, isoBtnH,
+                hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdDlgBtnUninstallSink)), st->hInst, nullptr);
+            SendMessageW(st->btnUninstallSink, WM_SETFONT, reinterpret_cast<WPARAM>(st->fontBody), TRUE);
+
+            st->btnRestoreRoutes = CreateWindowExW(
+                0, L"BUTTON", s.settingsBtnRestoreRoutes,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                rowX + installW + isoGap + uninstallW + isoGap, isoBtnY, restoreW, isoBtnH,
+                hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdDlgBtnRestoreRoutes)), st->hInst, nullptr);
+            SendMessageW(st->btnRestoreRoutes, WM_SETFONT, reinterpret_cast<WPARAM>(st->fontBody), TRUE);
+
+            RefreshVirtualSinkControls(st);
+
             // Config file path caption
             const std::wstring cfgLine = std::wstring(s.settingsConfigPathPrefix) + st->configPath;
             HWND lblCfg = CreateWindowExW(
                 0, L"STATIC", cfgLine.c_str(),
                 WS_CHILD | WS_VISIBLE | SS_LEFT | SS_PATHELLIPSIS,
-                pad, ScalePx(338, dpi), innerW, ScalePx(20, dpi),
+                pad, ScalePx(464, dpi), innerW, ScalePx(20, dpi),
                 hwnd, nullptr, st->hInst, nullptr);
             SendMessageW(lblCfg, WM_SETFONT, reinterpret_cast<WPARAM>(st->fontSmall), TRUE);
 
             // Save / Cancel buttons
             const int btnW = ScalePx(108, dpi);
             const int btnH = ScalePx(32, dpi);
-            const int btnY = ScalePx(364, dpi);
+            const int btnY = ScalePx(488, dpi);
             const int cancelX = pad + innerW - btnW;
             const int saveX = cancelX - ScalePx(10, dpi) - btnW;
 
@@ -1253,11 +1664,32 @@ LRESULT CALLBACK SettingsDialogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 return 0;
             }
 
+            if (cmd == kIdDlgBtnInstallSink) {
+                HandleVirtualSinkSetupClick(hwnd, st, true);
+                return 0;
+            }
+
+            if (cmd == kIdDlgBtnUninstallSink) {
+                HandleVirtualSinkSetupClick(hwnd, st, false);
+                return 0;
+            }
+
+            if (cmd == kIdDlgBtnRestoreRoutes) {
+                HandleRestoreRoutesClick(hwnd, st);
+                return 0;
+            }
+
             if (cmd == IDOK) {
                 const LRESULT langSel = st->comboLang ? SendMessageW(st->comboLang, CB_GETCURSEL, 0, 0) : 0;
                 if (langSel == 1) st->selectedLanguage = stagee::UiLanguage::ZhCn;
                 else if (langSel == 2) st->selectedLanguage = stagee::UiLanguage::EnUs;
                 else st->selectedLanguage = stagee::UiLanguage::Auto;
+
+                const bool autoChecked =
+                    !st->chkAutoRoute || (SendMessageW(st->chkAutoRoute, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                st->selectedAutoRouteMode = autoChecked
+                    ? stagee::AutoRouteMode::Auto
+                    : stagee::AutoRouteMode::Manual;
 
                 const bool customChecked =
                     st->radioCustomApp && (SendMessageW(st->radioCustomApp, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -1569,6 +2001,8 @@ public:
             std::string startErr;
             engineStartedOk_ = engine_.Start(opts_.engine, startErr);
             lastStartError_ = startErr;
+        } else if (opts_.engine.enableAutoRouting) {
+            stagee::StageEBridgeEngine::RestoreAllAutoRoutesNow(opts_.engine.routeJournalPath);
         }
 
         latestSnap_ = engine_.GetSnapshot();
@@ -1982,7 +2416,9 @@ private:
         st.effectiveUiLang = EffectiveLang();
         st.ui = &CurrentStrings();
         st.configPath = settingsFilePath_;
+        st.routeJournalPath = opts_.engine.routeJournalPath;
         st.selectedLanguage = activeLanguagePref_;
+        st.selectedAutoRouteMode = engine_.IsRunning() ? engine_.GetAutoRouteMode() : settings_.autoRouteMode;
         st.selectedSource = engine_.IsRunning() ? engine_.GetAudioSource() : settings_.source;
         if (st.selectedSource.mode == stagee::AudioSourceMode::CustomProcess) {
             st.rememberedCustomExeName = st.selectedSource.customExeName;
@@ -1990,7 +2426,7 @@ private:
         }
 
         const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
-        RECT rc{ 0, 0, ScalePx(540, st.dpi), ScalePx(408, st.dpi) };
+        RECT rc{ 0, 0, ScalePx(540, st.dpi), ScalePx(532, st.dpi) };
         AdjustWindowRectEx(&rc, style, FALSE, WS_EX_DLGMODALFRAME);
         const int winW = rc.right - rc.left;
         const int winH = rc.bottom - rc.top;
@@ -2015,11 +2451,16 @@ private:
         if (st.accepted) {
             settings_.language = st.selectedLanguage;
             settings_.source = st.selectedSource;
+            settings_.autoRouteMode = st.selectedAutoRouteMode;
             opts_.engine.source = st.selectedSource;
+            opts_.engine.autoRouteMode = opts_.noAutoRouteOverride
+                ? stagee::AutoRouteMode::Manual
+                : st.selectedAutoRouteMode;
             opts_.engine.targetExe.clear();
             opts_.engine.targetPid = 0u;
 
             engine_.SetAudioSource(st.selectedSource);
+            engine_.SetAutoRouteMode(opts_.engine.autoRouteMode);
             ApplyLanguageAndRefreshUi(st.selectedLanguage);
 
             std::string saveErr;
@@ -2085,20 +2526,22 @@ private:
         std::wstring text;
         if (en) {
             text =
-                L"GTA IV Independence FM — Audio Bridge (Stage E1 + Stream Anything)\n\n"
+                L"GTA IV Independence FM — Audio Bridge (v0.3.0-beta.1)\n\n"
                 L"Active Audio Source:\n  " + curSrcW + L"\n\n"
                 L"Architecture:\n"
                 L"  • x64 WASAPI Per-Process Tree Loopback (48 kHz / 2ch / 16-bit PCM)\n"
+                L"  • Per-App Auto Silent Sink Isolation + Exit Auto-Restore (AudioPolicyConfig)\n"
                 L"  • Lock-Free Cross-Bitness Shared Memory Ring Buffer\n"
                 L"  • x86 WMF IWMSyncReader In-Game Radio Consumer (IVRadioProbe.asi)\n\n"
                 L"Settings File:\n  " + settingsFilePath_ + L"\n\n"
                 L"Session Log Directory:\n  " + logDir;
         } else {
             text =
-                L"GTA IV Independence FM — Audio Bridge (Stage E1 + Stream Anything)\n\n"
+                L"GTA IV Independence FM — Audio Bridge (v0.3.0-beta.1)\n\n"
                 L"当前捕获音源：\n  " + curSrcW + L"\n\n"
                 L"管线架构：\n"
                 L"  • x64 WASAPI 按进程树隔离环回捕获 (48 kHz / 2ch / 16-bit PCM)\n"
+                L"  • AudioPolicyConfig 单进程自动静音端点隔离与退出自恢复\n"
                 L"  • 跨位数无锁共享内存环形缓冲 (Local\\GTAIV_StageC_IpcRing_v1)\n"
                 L"  • x86 WMF IWMSyncReader 游戏车载电台消费端 (IVRadioProbe.asi)\n\n"
                 L"配置文件路径：\n  " + settingsFilePath_ + L"\n\n"
@@ -2734,39 +3177,87 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         ? opts.cliLanguageOverride
         : persistedSettings.language;
     opts.engine.source = persistedSettings.source;
+    opts.engine.routeJournalPath = stagee::ResolveRouteJournalPathForSettings(settingsPath);
+    if (opts.noAutoRouteOverride) {
+        opts.engine.autoRouteMode = stagee::AutoRouteMode::Manual;
+        opts.engine.enableAutoRouting = false;
+    } else {
+        opts.engine.autoRouteMode = persistedSettings.autoRouteMode;
+        opts.engine.enableAutoRouting = true;
+    }
+
+    if (opts.installVirtualSink || opts.uninstallVirtualSink) {
+        const stagee::VirtualSinkInstallResult res = opts.installVirtualSink
+            ? stagee::InstallVirtualAudioSink(opts.driverDir, opts.reportJsonPath)
+            : stagee::UninstallVirtualAudioSink(opts.reportJsonPath);
+        if (!opts.quiet) {
+            const bool en = (stagee::ResolveEffectiveLanguage(opts.engine.language) == stagee::UiLanguage::EnUs);
+            MessageBoxW(
+                nullptr,
+                staged::Utf8ToWide(res.detailUtf8).c_str(),
+                en ? L"Virtual Silent Sink" : L"虚拟静音端点",
+                res.succeeded ? (MB_ICONINFORMATION | MB_OK) : (MB_ICONERROR | MB_OK));
+        }
+        return res.succeeded ? 0 : 1;
+    }
+
+    if (opts.restoreRoutesOnly) {
+        const stagee::RouteRestoreSummary sum =
+            stagee::StageEBridgeEngine::RestoreAllAutoRoutesNow(opts.engine.routeJournalPath);
+        if (!opts.quiet && !opts.headless) {
+            const UiStrings& s = GetUiStrings(opts.engine.language);
+            wchar_t msg[512]{};
+            std::swprintf(msg, std::size(msg), s.settingsRestoreSummaryFmt,
+                          static_cast<unsigned>(sum.restoredCount),
+                          static_cast<unsigned>(sum.skippedUserModifiedCount),
+                          static_cast<unsigned>(sum.deferredCount),
+                          static_cast<unsigned>(sum.failedCount));
+            MessageBoxW(nullptr, msg, s.settingsSinkActionTitle,
+                        sum.failedCount > 0u ? (MB_ICONWARNING | MB_OK) : (MB_ICONINFORMATION | MB_OK));
+        }
+        return (sum.failedCount == 0u) ? 0 : 1;
+    }
 
     if (opts.showHelp) {
         const bool en = (stagee::ResolveEffectiveLanguage(opts.engine.language) == stagee::UiLanguage::EnUs);
         const wchar_t* helpTextZh =
-            L"GTA IV Independence FM — Audio Bridge (Stage E1 + Stream Anything)\n\n"
+            L"GTA IV Independence FM — Audio Bridge (v0.3.0-beta.1)\n\n"
             L"日常使用：直接双击 iv_apple_music_radio.exe 即可自动发现配置的发声程序并驻留系统托盘。\n"
-            L"界面顶部菜单栏『选项 -> 设置』支持切换语言（中/英）以及选择兼容的 Windows 音频应用 (Stream Anything)。\n\n"
+            L"界面顶部菜单栏『选项 -> 设置』支持零硬件静音隔离、切换语言（中/英）以及选择兼容的 Windows 音频应用 (Stream Anything)。\n\n"
             L"可选命令行参数：\n"
-            L"  --lang <auto|zh|en>      指定本次界面语言（也可在界面『选项 -> 设置』中永久保存）\n"
-            L"  --source-exe <exe|path>  指定本次捕获的发声程序（例如 Spotify.exe 或完整路径）\n"
-            L"  --config-path <path>     指定设置 JSON 文件路径\n"
-            L"  --start-minimized        启动后直接最小化驻留托盘\n"
-            L"  --no-auto-start          打开面板但不自动启动桥接\n"
-            L"  --log-dir <dir>          自定义会话日志目录（默认写入仓库或程序旁侧 logs/）\n"
-            L"  --keep-logs <N>          保留最近 N 份会话日志（默认 10）\n"
-            L"  --max-log-mb <MB>        单个日志文件分片上限（默认 20 MiB）\n"
-            L"  --telemetry-jsonl <path> 固定写入单个遥测文件路径\n"
-            L"  --headless               无界面后台运行模式（供自动化测试与脚本调用）";
+            L"  --lang <auto|zh|en>       指定本次界面语言（也可在界面『选项 -> 设置』中永久保存）\n"
+            L"  --source-exe <exe|path>   指定本次捕获的发声程序（例如 VLC.exe 或完整路径）\n"
+            L"  --config-path <path>      指定设置 JSON 文件路径\n"
+            L"  --install-virtual-sink    安装本地 SteamStreamingSpeakers WHQL 虚拟静音端点（需管理员）\n"
+            L"  --uninstall-virtual-sink  卸载虚拟静音端点（需管理员）\n"
+            L"  --restore-routes          立即恢复之前隔离的音频应用默认输出\n"
+            L"  --no-auto-route           本次禁用自动单进程路由隔离\n"
+            L"  --start-minimized         启动后直接最小化驻留托盘\n"
+            L"  --no-auto-start           打开面板但不自动启动桥接\n"
+            L"  --log-dir <dir>           自定义会话日志目录\n"
+            L"  --keep-logs <N>           保留最近 N 份会话日志（默认 10）\n"
+            L"  --max-log-mb <MB>         单个日志文件分片上限（默认 20 MiB）\n"
+            L"  --telemetry-jsonl <path>  固定写入单个遥测文件路径\n"
+            L"  --headless                无界面后台运行模式（供自动化测试与脚本调用）";
         const wchar_t* helpTextEn =
-            L"GTA IV Independence FM — Audio Bridge (Stage E1 + Stream Anything)\n\n"
+            L"GTA IV Independence FM — Audio Bridge (v0.3.0-beta.1)\n\n"
             L"Daily Usage: Double-click iv_apple_music_radio.exe to auto-discover your configured audio app and stay in the system tray.\n"
-            L"Use 'Options -> Settings' in the top menu bar to switch language or pick a compatible Windows audio app (Stream Anything).\n\n"
+            L"Use 'Options -> Settings' to manage zero-hardware silent isolation, switch language, or pick a compatible Windows audio app (Stream Anything).\n\n"
             L"Optional CLI Flags:\n"
-            L"  --lang <auto|zh|en>      Override UI language for this run (or persist via Options -> Settings)\n"
-            L"  --source-exe <exe|path>  Override target audio executable for this run (e.g. Spotify.exe)\n"
-            L"  --config-path <path>     Custom settings JSON path\n"
-            L"  --start-minimized        Start minimized directly in the system tray\n"
-            L"  --no-auto-start          Open the panel without auto-starting the bridge\n"
-            L"  --log-dir <dir>          Custom session log directory\n"
-            L"  --keep-logs <N>          Retain latest N session logs (default: 10)\n"
-            L"  --max-log-mb <MB>        Max size per log file part in MiB (default: 20)\n"
-            L"  --telemetry-jsonl <path> Write telemetry to a single explicit JSONL file\n"
-            L"  --headless               Run headless in background (for automated test gates)";
+            L"  --lang <auto|zh|en>       Override UI language for this run (or persist via Options -> Settings)\n"
+            L"  --source-exe <exe|path>   Override target audio executable for this run (e.g. VLC.exe)\n"
+            L"  --config-path <path>      Custom settings JSON path\n"
+            L"  --install-virtual-sink    Install local SteamStreamingSpeakers WHQL virtual sink (Admin required)\n"
+            L"  --uninstall-virtual-sink  Uninstall the virtual sink device (Admin required)\n"
+            L"  --restore-routes          Immediately restore persisted per-app audio routes from journal\n"
+            L"  --no-auto-route           Disable automatic per-process endpoint isolation for this run\n"
+            L"  --start-minimized         Start minimized directly in the system tray\n"
+            L"  --no-auto-start           Open the panel without auto-starting the bridge\n"
+            L"  --log-dir <dir>           Custom session log directory\n"
+            L"  --keep-logs <N>           Retain latest N session logs (default: 10)\n"
+            L"  --max-log-mb <MB>         Max size per log file part in MiB (default: 20)\n"
+            L"  --telemetry-jsonl <path>  Write telemetry to a single explicit JSONL file\n"
+            L"  --headless                Run headless in background (for automated test gates)";
         if (!opts.headless) {
             MessageBoxW(
                 nullptr,

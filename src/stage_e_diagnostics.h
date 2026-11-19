@@ -2,6 +2,7 @@
 
 #include "stage_d_capture.h"
 #include "stage_d_timeline.h"
+#include "stage_e_routing_isolator.h"
 
 #include <array>
 #include <cstdio>
@@ -69,9 +70,10 @@ struct SelectableAudioApp {
 std::vector<SelectableAudioApp> EnumerateSelectableAudioApps(const staged::AudioTopologyReport& topo);
 
 struct LauncherSettings {
-    uint32_t version = 2u;
+    uint32_t version = 3u;
     UiLanguage language = UiLanguage::Auto;
     AudioSourceConfig source{};
+    AutoRouteMode autoRouteMode = AutoRouteMode::Auto;
 };
 
 // Returns '<exeDir>\iv_apple_music_radio.settings.json' (or relative fallback when exeDir empty).
@@ -224,6 +226,10 @@ struct RoutingDiagnostic {
 
     std::vector<std::string> otherActiveMediaAppsUtf8;
 
+    // Stage E2 zero-hardware auto-isolation & virtual silent sink status
+    bool hasAutoRouteStatus = false;
+    AutoRouteStatus autoRoute{};
+
     std::string bannerTitleUtf8;
     std::string bannerDetailUtf8;
 };
@@ -234,7 +240,8 @@ RoutingDiagnostic EvaluateRoutingIsolation(const staged::AudioTopologyReport& to
                                            uint32_t currentTargetPid,
                                            const std::wstring& targetExeLeaf,
                                            RoutingIsolatorTracker& tracker,
-                                           UiLanguage lang = UiLanguage::ZhCn);
+                                           UiLanguage lang = UiLanguage::ZhCn,
+                                           const AutoRouteStatus* optAutoRoute = nullptr);
 
 // ============================================================================
 // Section C: Unified Human-Readable Pipeline & Silence State Machine

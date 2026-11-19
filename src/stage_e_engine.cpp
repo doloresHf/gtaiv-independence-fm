@@ -930,6 +930,7 @@ void CaptureWorkerProc(CaptureWorkerContext* ctx) {
 
 struct SharedTopologyContext {
     StageEEngineOptions opts;
+    std::wstring journalPath;
     HANDLE stopEvent = nullptr;
     HANDLE reconfigEvent = nullptr;
     std::mutex* sourceMu = nullptr;
@@ -938,12 +939,54 @@ struct SharedTopologyContext {
     std::atomic<bool> stopRequested{ false };
     std::atomic<uint32_t> activeTargetPid{ 0u };
     const std::atomic<uint8_t>* uiLanguage = nullptr;
+    const std::atomic<uint8_t>* autoRouteMode = nullptr;
+
+    Win32AudioPolicyConfigAccess* policyAccess = nullptr;
+    AutoRouteController* autoRouter = nullptr;
 
     std::mutex mu;
     RoutingDiagnostic latestRouting{};
     uint64_t latestSourceSeq = 0ULL;
     uint64_t updateSeq = 0ULL;
 };
+
+RoutingDiagnostic EvaluateOneTopologyCycle(SharedTopologyContext& ctx,
+                                           const AudioSourceConfig& curSrc,
+                                           RoutingIsolatorTracker& tracker) {
+    const std::wstring targetLeaf = (curSrc.mode == AudioSourceMode::AppleMusicPreset)
+        ? std::wstring(L"AMPLibraryAgent.exe")
+        : staged::ExtractLeafFilename(curSrc.customExeName);
+
+    staged::AudioTopologyReport topo;
+    std::string topoErr;
+    if (!staged::DiscoverAudioTopology(topo, topoErr)) {
+        return RoutingDiagnostic{};
+    }
+
+    const uint32_t curPid = ctx.activeTargetPid.load(std::memory_order_acquire);
+    const UiLanguage curLang = ctx.uiLanguage
+        ? ResolveEffectiveLanguage(static_cast<UiLanguage>(ctx.uiLanguage->load(std::memory_order_acquire)))
+        : ResolveEffectiveLanguage(ctx.opts.language);
+
+    AutoRouteStatus autoSt{};
+    bool haveAutoSt = false;
+    if (ctx.opts.enableAutoRouting && ctx.policyAccess && ctx.autoRouter) {
+        const AutoRouteMode curMode = ctx.autoRouteMode
+            ? static_cast<AutoRouteMode>(ctx.autoRouteMode->load(std::memory_order_acquire))
+            : ctx.opts.autoRouteMode;
+        AutoRouteTargetSpec spec{};
+        spec.isAppleMusicPreset = (curSrc.mode == AudioSourceMode::AppleMusicPreset);
+        spec.customExeName = curSrc.customExeName;
+        spec.customExePath = curSrc.customExePath;
+        spec.captureTargetPid = curPid;
+        autoSt = ctx.autoRouter->ReconcileDuringBridge(
+            *ctx.policyAccess, ctx.journalPath, topo, spec, curMode);
+        haveAutoSt = true;
+    }
+
+    return EvaluateRoutingIsolation(
+        topo, curPid, targetLeaf, tracker, curLang, haveAutoSt ? &autoSt : nullptr);
+}
 
 void TopologyMonitorProc(SharedTopologyContext* ctx) {
     if (!ctx) {
@@ -953,7 +996,7 @@ void TopologyMonitorProc(SharedTopologyContext* ctx) {
 
     RoutingIsolatorTracker tracker;
     uint64_t trackedSourceSeq = 0ULL;
-    const DWORD pollMs = std::max<DWORD>(250u, ctx->opts.topologyPollIntervalMs);
+    const DWORD steadyPollMs = std::max<DWORD>(250u, ctx->opts.topologyPollIntervalMs);
 
     while (!ctx->stopRequested.load(std::memory_order_acquire)) {
         AudioSourceConfig curSrc{};
@@ -971,28 +1014,23 @@ void TopologyMonitorProc(SharedTopologyContext* ctx) {
             tracker.Reset();
         }
 
-        const std::wstring targetLeaf = (curSrc.mode == AudioSourceMode::AppleMusicPreset)
-            ? std::wstring(L"AMPLibraryAgent.exe")
-            : staged::ExtractLeafFilename(curSrc.customExeName);
-
-        staged::AudioTopologyReport topo;
-        std::string topoErr;
-        if (staged::DiscoverAudioTopology(topo, topoErr)) {
-            const uint32_t curPid = ctx->activeTargetPid.load(std::memory_order_acquire);
-            const UiLanguage curLang = ctx->uiLanguage
-                ? ResolveEffectiveLanguage(static_cast<UiLanguage>(ctx->uiLanguage->load(std::memory_order_acquire)))
-                : ResolveEffectiveLanguage(ctx->opts.language);
-            RoutingDiagnostic diag = EvaluateRoutingIsolation(topo, curPid, targetLeaf, tracker, curLang);
-            {
-                std::lock_guard<std::mutex> lock(ctx->mu);
-                ctx->latestRouting = std::move(diag);
-                ctx->latestSourceSeq = curSeq;
-                ++ctx->updateSeq;
+        RoutingDiagnostic diag = EvaluateOneTopologyCycle(*ctx, curSrc, tracker);
+        DWORD nextPollMs = steadyPollMs;
+        if (diag.state != RoutingIsolationState::Unknown) {
+            if (diag.hasAutoRouteStatus &&
+                diag.autoRoute.mode == AutoRouteMode::Auto &&
+                (diag.autoRoute.state == AutoRouteState::WaitingForTargetProcess ||
+                 diag.state != RoutingIsolationState::IsolatedOk)) {
+                nextPollMs = std::min<DWORD>(steadyPollMs, 350u);
             }
+            std::lock_guard<std::mutex> lock(ctx->mu);
+            ctx->latestRouting = std::move(diag);
+            ctx->latestSourceSeq = curSeq;
+            ++ctx->updateSeq;
         }
 
         if (!WaitInterruptibleOrReconfigMs(
-                ctx->stopEvent, ctx->reconfigEvent, ctx->stopRequested, ctx->sourceConfigSeq, curSeq, pollMs)) {
+                ctx->stopEvent, ctx->reconfigEvent, ctx->stopRequested, ctx->sourceConfigSeq, curSeq, nextPollMs)) {
             break;
         }
     }
@@ -1107,6 +1145,29 @@ AudioSourceConfig StageEBridgeEngine::GetAudioSource() const {
     return sourceConfig_;
 }
 
+void StageEBridgeEngine::SetAutoRouteMode(AutoRouteMode mode) noexcept {
+    autoRouteMode_.store(static_cast<uint8_t>(mode), std::memory_order_release);
+    std::lock_guard<std::mutex> srcLock(sourceMu_);
+    sourceConfigSeq_.fetch_add(1ULL, std::memory_order_acq_rel);
+    if (topoReconfigEvent_) {
+        SetEvent(topoReconfigEvent_);
+    }
+}
+
+AutoRouteMode StageEBridgeEngine::GetAutoRouteMode() const noexcept {
+    return static_cast<AutoRouteMode>(autoRouteMode_.load(std::memory_order_acquire));
+}
+
+RouteRestoreSummary StageEBridgeEngine::RestoreAllAutoRoutesNow(const std::wstring& journalPathOverride) {
+    ScopedCoInit co(COINIT_MULTITHREADED);
+    const std::wstring jPath = journalPathOverride.empty()
+        ? ResolveRouteJournalPathForSettings(L"")
+        : journalPathOverride;
+    Win32AudioPolicyConfigAccess policy;
+    AutoRouteController router;
+    return router.RestoreAllRoutes(policy, jPath, nullptr, true);
+}
+
 bool StageEBridgeEngine::Start(const StageEEngineOptions& opts, std::string& outError) {
     std::lock_guard<std::mutex> lifeLock(lifecycleMu_);
     outError.clear();
@@ -1114,6 +1175,7 @@ bool StageEBridgeEngine::Start(const StageEEngineOptions& opts, std::string& out
     const AudioSourceConfig effectiveSrc = DeriveEffectiveSourceFromOptions(opts);
     SetAudioSource(effectiveSrc);
     SetLanguage(opts.language);
+    autoRouteMode_.store(static_cast<uint8_t>(opts.autoRouteMode), std::memory_order_release);
 
     if (running_.load(std::memory_order_acquire)) {
         return true;
@@ -1398,8 +1460,18 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
     captureCtx.sourceConfigSeq = &sourceConfigSeq_;
     captureCtx.queue = &captureQueue;
 
+    const std::wstring effectiveJournalPath = opts.routeJournalPath.empty()
+        ? ResolveRouteJournalPathForSettings(L"")
+        : opts.routeJournalPath;
+    Win32AudioPolicyConfigAccess policyAccess;
+    AutoRouteController autoRouter;
+    if (opts.enableAutoRouting) {
+        autoRouter.RecoverOnStartup(policyAccess, effectiveJournalPath);
+    }
+
     SharedTopologyContext topoCtx;
     topoCtx.opts = opts;
+    topoCtx.journalPath = effectiveJournalPath;
     topoCtx.stopEvent = hWorkerStopEvent.Get();
     topoCtx.reconfigEvent = hTopoReconfigEvent.Get();
     topoCtx.sourceMu = &sourceMu_;
@@ -1407,6 +1479,9 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
     topoCtx.sourceConfigSeq = &sourceConfigSeq_;
     topoCtx.activeTargetPid.store(opts.targetPid, std::memory_order_release);
     topoCtx.uiLanguage = &uiLanguage_;
+    topoCtx.autoRouteMode = &autoRouteMode_;
+    topoCtx.policyAccess = &policyAccess;
+    topoCtx.autoRouter = &autoRouter;
 
     staged::TelemetryLineContext telCtx;
     telCtx.targetPid = opts.targetPid;
@@ -1427,6 +1502,16 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
     RoutingDiagnostic cachedRouting{};
     cachedRouting.isAppleMusicMode = (curSourceCfg.mode == AudioSourceMode::AppleMusicPreset);
     cachedRouting.targetDisplayNameUtf8 = curTargetDisplayNameUtf8;
+    {
+        RoutingIsolatorTracker initTracker;
+        RoutingDiagnostic initialDiag = EvaluateOneTopologyCycle(topoCtx, curSourceCfg, initTracker);
+        if (initialDiag.state != RoutingIsolationState::Unknown) {
+            cachedRouting = std::move(initialDiag);
+            std::lock_guard<std::mutex> lock(topoCtx.mu);
+            topoCtx.latestRouting = cachedRouting;
+            topoCtx.latestSourceSeq = appliedSourceSeq;
+        }
+    }
     BridgeDiagnosticInput latestBuiltInput{};
 
     auto buildDiagReport = [&](uint64_t now100ns,
@@ -1577,6 +1662,9 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
                 captureTargetExeUtf8 = item.targetExeUtf8;
                 captureFormatUtf8 = item.formatLabelUtf8;
                 topoCtx.activeTargetPid.store(item.targetPid, std::memory_order_release);
+                if (hTopoReconfigEvent.IsValid()) {
+                    SetEvent(hTopoReconfigEvent.Get());
+                }
 
                 telCtx.targetPid = item.targetPid;
                 telCtx.targetExeUtf8 = item.targetExeUtf8;
@@ -1715,6 +1803,20 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
     }
     if (topoThread.joinable()) {
         topoThread.join();
+    }
+    if (opts.enableAutoRouting) {
+        const RouteRestoreSummary stopRestore =
+            autoRouter.RestoreAllRoutes(policyAccess, effectiveJournalPath, nullptr, true);
+        if (cachedRouting.hasAutoRouteStatus) {
+            cachedRouting.autoRoute.pendingRestoreCount =
+                AutoRouteController::CountPendingJournalEntries(effectiveJournalPath);
+            if (stopRestore.journalExisted && !stopRestore.items.empty()) {
+                cachedRouting.autoRoute.lastRestoreSummaryUtf8 =
+                    "restored=" + std::to_string(stopRestore.restoredCount) +
+                    ", deferred=" + std::to_string(stopRestore.deferredCount) +
+                    ", skipped_user=" + std::to_string(stopRestore.skippedUserModifiedCount);
+            }
+        }
     }
     {
         std::lock_guard<std::mutex> srcLock(sourceMu_);

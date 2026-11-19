@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(GTAIV_AppleMusic_Radio VERSION 0.2.0 LANGUAGES C CXX)
+project(GTAIV_AppleMusic_Radio VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -128,12 +128,13 @@ else()
         tools/stage_e_launcher.cpp
         src/stage_e_engine.cpp
         src/stage_e_diagnostics.cpp
+        src/stage_e_routing_isolator.cpp
         src/stage_d_capture.cpp
         src/stage_d_timeline.cpp
     )
     target_include_directories(iv_apple_music_radio PRIVATE src)
     target_link_libraries(iv_apple_music_radio PRIVATE
-        user32 gdi32 shell32 comctl32 comdlg32 mmdevapi ole32 avrt uuid winmm
+        user32 gdi32 shell32 comctl32 comdlg32 mmdevapi ole32 avrt uuid winmm bcrypt setupapi advapi32
     )
     if(MSVC)
         target_compile_options(iv_apple_music_radio PRIVATE /W4 /WX)
@@ -146,12 +147,13 @@ else()
         tests/stage_e_offline_selftest.cpp
         src/stage_e_engine.cpp
         src/stage_e_diagnostics.cpp
+        src/stage_e_routing_isolator.cpp
         src/stage_d_capture.cpp
         src/stage_d_timeline.cpp
     )
     target_include_directories(stage_e_offline_selftest PRIVATE src)
     target_link_libraries(stage_e_offline_selftest PRIVATE
-        mmdevapi ole32 avrt uuid winmm
+        mmdevapi ole32 avrt uuid winmm bcrypt setupapi advapi32
     )
     if(MSVC)
         target_compile_options(stage_e_offline_selftest PRIVATE /W4 /WX)
@@ -160,6 +162,9 @@ else()
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )
     add_executable(Setup WIN32 tools/setup.cpp)
-    target_link_libraries(Setup PRIVATE bcrypt comdlg32 shell32 ole32 uuid version)
+    target_link_libraries(Setup PRIVATE bcrypt comdlg32 shell32 ole32 uuid version setupapi)
+    if(MSVC)
+        target_compile_options(Setup PRIVATE /W4 /WX)
+    endif()
     set_target_properties(Setup PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 endif()

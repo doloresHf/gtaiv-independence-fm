@@ -4,6 +4,7 @@
 #include "stage_d_capture.h"
 #include "stage_d_timeline.h"
 #include "stage_e_diagnostics.h"
+#include "stage_e_routing_isolator.h"
 
 #include <atomic>
 #include <cstdint>
@@ -23,6 +24,9 @@ struct StageEEngineOptions {
     uint32_t telemetryIntervalMs = 1000u;
     uint32_t topologyPollIntervalMs = 1500u;
     UiLanguage language = UiLanguage::Auto;
+    AutoRouteMode autoRouteMode = AutoRouteMode::Auto;
+    std::wstring routeJournalPath; // Empty = sibling of executable
+    bool enableAutoRouting = true; // False disables AudioPolicyConfig mutations (for headless flags/tests)
     RotatingLoggerOptions logger{};
 };
 
@@ -92,10 +96,18 @@ public:
     bool SetAudioSource(const AudioSourceConfig& source);
     AudioSourceConfig GetAudioSource() const;
 
+    // Hot-switches zero-hardware automatic endpoint isolation (Auto <-> Manual, restores routes on Manual).
+    void SetAutoRouteMode(AutoRouteMode mode) noexcept;
+    AutoRouteMode GetAutoRouteMode() const noexcept;
+
+    // Restores any isolated/pending app routes back to their pre-bridge original endpoints immediately.
+    static RouteRestoreSummary RestoreAllAutoRoutesNow(const std::wstring& journalPathOverride = L"");
+
 private:
     void TimelineCommitThreadMain(StageEEngineOptions opts, HANDLE startupDoneEvent);
 
     std::atomic<uint8_t> uiLanguage_{ static_cast<uint8_t>(UiLanguage::Auto) };
+    std::atomic<uint8_t> autoRouteMode_{ static_cast<uint8_t>(AutoRouteMode::Auto) };
 
     mutable std::mutex sourceMu_;
     AudioSourceConfig sourceConfig_{};
