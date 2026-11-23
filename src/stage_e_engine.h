@@ -1,6 +1,9 @@
 #pragma once
 
 #include "ipc_ring_protocol.h"
+#include "route_b_coordinator.h"
+#include "route_b_ctrl_protocol.h"
+#include "route_b_smtc.h"
 #include "stage_d_capture.h"
 #include "stage_d_timeline.h"
 #include "stage_e_diagnostics.h"
@@ -27,6 +30,8 @@ struct StageEEngineOptions {
     AutoRouteMode autoRouteMode = AutoRouteMode::Auto;
     std::wstring routeJournalPath; // Empty = sibling of executable
     bool enableAutoRouting = true; // False disables AudioPolicyConfig mutations (for headless flags/tests)
+    std::wstring ctrlMappingName = routeb::kDefaultCtrlMappingName;
+    bool enableRadioModeBridge = true;
     RotatingLoggerOptions logger{};
 };
 
@@ -63,6 +68,7 @@ struct StageELiveSnapshot {
     staged::IpcTelemetryCounters ipc{};
     PcmLevelSnapshot level{};
     RoutingDiagnostic routing{};
+    routeb::RouteBCoordinatorStatus routeB{};
     BridgeDiagnosticReport report{};
 };
 
@@ -100,6 +106,10 @@ public:
     void SetAutoRouteMode(AutoRouteMode mode) noexcept;
     AutoRouteMode GetAutoRouteMode() const noexcept;
 
+    // Enables or disables Route B Independence FM Radio Mode synchronization without stopping capture.
+    void SetRadioModeBridgeEnabled(bool enabled) noexcept;
+    bool GetRadioModeBridgeEnabled() const noexcept;
+
     // Restores any isolated/pending app routes back to their pre-bridge original endpoints immediately.
     static RouteRestoreSummary RestoreAllAutoRoutesNow(const std::wstring& journalPathOverride = L"");
 
@@ -108,6 +118,7 @@ private:
 
     std::atomic<uint8_t> uiLanguage_{ static_cast<uint8_t>(UiLanguage::Auto) };
     std::atomic<uint8_t> autoRouteMode_{ static_cast<uint8_t>(AutoRouteMode::Auto) };
+    std::atomic<bool> radioModeBridgeEnabled_{ true };
 
     mutable std::mutex sourceMu_;
     AudioSourceConfig sourceConfig_{};

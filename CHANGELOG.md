@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## [v0.4.0-beta.1] - Unreleased
+
+### Added
+- **Independence FM Radio Mode Sync (`IVRadioBridge.asi` + WinRT SMTC)**:
+  - Added x86 engine adapter `IVRadioBridge.asi` (`src/route_b_hooks.*`, `src/route_b_offsets.*`, `src/route_b_ipc_consumer.*`, `src/route_b_asi_main.cpp`) with 8 ASLR-safe masked prologue signature fuses for Steam GTA IV Complete Edition `1.2.0.59` and mutual-exclusion check against `IVRadioProbe.asi`.
+  - Added x64 WinRT SMTC session controller (`src/route_b_smtc.*` bound to `AppleInc.AppleMusicWin`), deterministic coordinator (`src/route_b_coordinator.*`), and 512-byte cross-bitness control mapping `Local\GTAIV_RadioBridge_Ctrl_v1` (`src/route_b_ctrl_protocol.h`).
+  - Synchronizes track endings with GTA IV DJ / commercials / Weazel News breaks without interrupting native audio, pre-rolls incoming songs cleanly at `0:00`, supports seamless back-to-back song handoffs (`SetSongEndBarrier` + gap-aware `FillPreloadedBlocksAtPlay`), and preserves unread tail audio in RAM (`PreserveUnreadTailIfApproachingLap`) so multi-minute `ESC` pauses resume without skipping ahead.
+  - Supports in-game `N` (next track) and `B` (Apple Music previous/restart) while playing songs while ignoring `B`/`N` during DJ/ad breaks and passing `B`/`N` through natively in Sequential mode or when Radio Mode sync is inactive/disabled.
+  - Added bilingual Settings checkbox, Row 5 live Radio Mode status display, `rb_*` session telemetry fields, `--no-radio-bridge` CLI flag, and `release/IVRadioBridge.ini`.
+- **Route B Offline Verification Suite**: Added Win32 and x64 `route_b_offline_selftest` (Suites 1–5 including long-pause tail preservation, song-end barrier, gap-aware preload, and coordinator state machine coverage) to `CMakeLists.txt` and `build-release.ps1`.
+
+### Changed
+- **Upgraded `Setup.exe` Receipt (`v1`/`v2` → `IndependenceFM-v3`)**: Automatically retires `IVRadioProbe.{asi,ini}` and installs `IVRadioBridge.{asi,ini}` during transactional in-place upgrades from `v0.2.0-beta.1` and `v0.3.0-beta.1`, guards fresh installs against unmanaged `IVRadioProbe.asi`, and expands `Setup.exe --selftest`.
+- Updated `README.md`, `QUICKSTART.md`, and `QUICKSTART-zh-CN.md` for `v0.4.0-beta.1` Radio Mode usage and upgrades.
+
 ## [v0.3.0-beta.1] - Unreleased
 
 ### Added

@@ -122,14 +122,16 @@ std::wstring Digest(const fs::path& path) {
 }
 struct Layout {
     fs::path plugins, music, app;
-    std::array<fs::path, 6> Targets() const {
-        return {plugins / L"IVRadioProbe.asi", plugins / L"IVRadioProbe.ini",
+    std::array<fs::path, 6> Targets(bool usesBridgeAsi = true) const {
+        return {plugins / (usesBridgeAsi ? L"IVRadioBridge.asi" : L"IVRadioProbe.asi"),
+                plugins / (usesBridgeAsi ? L"IVRadioBridge.ini" : L"IVRadioProbe.ini"),
                 music / L"IV_Radio_Stream_01.mp3", music / L"IV_Radio_Stream_02.mp3",
                 music / L"IV_Radio_Stream_03.mp3", app / L"iv_apple_music_radio.exe"};
     }
 };
 struct Receipt {
     Layout layout;
+    bool usesBridgeAsi = true;
     std::array<std::wstring, 6> hashes;
 };
 // Endpoints may be deliberately redirected (OneDrive). Resolve the selected directory
@@ -150,7 +152,8 @@ void Store(const fs::path& path, const Receipt& receipt) {
     const fs::path temp = path.wstring() + L".pending";
     DeleteFileW(temp.c_str());
     const auto payload = [&] {
-        auto value = std::wstring(L"IndependenceFM-v2\n") + receipt.layout.plugins.wstring() + L"\n" +
+        auto value = std::wstring(receipt.usesBridgeAsi ? L"IndependenceFM-v3\n" : L"IndependenceFM-v2\n") +
+            receipt.layout.plugins.wstring() + L"\n" +
             receipt.layout.music.wstring() + L"\n" + std::to_wstring(receipt.hashes.size()) + L"\n";
         for (const auto& hash : receipt.hashes) value += hash + L"\n";
         return value;
@@ -185,12 +188,14 @@ Receipt Load(const fs::path& path, const fs::path& app) {
     const auto header = line();
     const bool isV1 = (header == L"IndependenceFM-v1");
     const bool isV2 = (header == L"IndependenceFM-v2");
-    Require(isV1 || isV2, "Unrecognized installation receipt");
+    const bool isV3 = (header == L"IndependenceFM-v3");
+    Require(isV1 || isV2 || isV3, "Unrecognized installation receipt");
     Receipt result;
+    result.usesBridgeAsi = isV3;
     result.layout = {fs::path(line()), fs::path(line()), app};
     Require(result.layout.plugins.is_absolute() && result.layout.music.is_absolute() &&
             result.layout.plugins.filename() == L"plugins", "Invalid installation paths");
-    if (isV2) {
+    if (isV2 || isV3) {
         Require(line() == std::to_wstring(result.hashes.size()), "Unexpected installation receipt file count");
     }
     for (auto& hash : result.hashes) {
@@ -202,7 +207,7 @@ Receipt Load(const fs::path& path, const fs::path& app) {
 void VerifyInstalled(const Receipt& receipt, bool fresh) {
     for (const auto& directory : {receipt.layout.plugins, receipt.layout.music, receipt.layout.app})
         Require(fs::weakly_canonical(directory) == directory, "An installation directory has moved or redirects elsewhere");
-    const auto targets = receipt.layout.Targets();
+    const auto targets = receipt.layout.Targets(receipt.usesBridgeAsi);
     for (size_t i = 0; i < targets.size(); ++i) {
         CheckFile(targets[i]);
         if (fs::exists(targets[i])) {
@@ -210,9 +215,14 @@ void VerifyInstalled(const Receipt& receipt, bool fresh) {
             Require(Digest(targets[i]) == receipt.hashes[i], "A managed file was edited. Back it up and move it aside before continuing.");
         }
     }
+    if (fresh && receipt.usesBridgeAsi) {
+        const fs::path legacyProbe = receipt.layout.plugins / L"IVRadioProbe.asi";
+        CheckFile(legacyProbe);
+        Require(!fs::exists(legacyProbe), "An existing IVRadioProbe.asi has no installation receipt. Move it aside manually first.");
+    }
 }
 void Install(const Receipt& receipt, const fs::path& payload) {
-    const auto targets = receipt.layout.Targets();
+    const auto targets = receipt.layout.Targets(receipt.usesBridgeAsi);
     std::array<fs::path, 6> sources{};
     for (size_t i = 0; i < targets.size(); ++i) {
         sources[i] = payload / targets[i].filename();
@@ -248,12 +258,24 @@ void Install(const Receipt& receipt, const fs::path& payload) {
 }
 void Upgrade(const Receipt& oldReceipt, const Receipt& newReceipt, const fs::path& payload, const fs::path& record) {
     VerifyInstalled(oldReceipt, false);
-    const auto targets = newReceipt.layout.Targets();
+    const auto oldTargets = oldReceipt.layout.Targets(oldReceipt.usesBridgeAsi);
+    const auto newTargets = newReceipt.layout.Targets(newReceipt.usesBridgeAsi);
     std::array<fs::path, 6> sources{};
-    for (size_t i = 0; i < targets.size(); ++i) {
-        sources[i] = payload / targets[i].filename();
+    for (size_t i = 0; i < newTargets.size(); ++i) {
+        sources[i] = payload / newTargets[i].filename();
         CheckFile(sources[i]);
         Require(Digest(sources[i]) == newReceipt.hashes[i], "The package differs from the upgrade manifest");
+    }
+    auto inList = [](const std::array<fs::path, 6>& list, const fs::path& p) {
+        return std::find(list.begin(), list.end(), p) != list.end();
+    };
+    if (oldReceipt.usesBridgeAsi != newReceipt.usesBridgeAsi) {
+        for (const auto& nt : newTargets) {
+            if (!inList(oldTargets, nt)) {
+                CheckFile(nt);
+                Require(!fs::exists(nt), "A destination plugin file already exists outside the installation receipt. Move it aside manually first.");
+            }
+        }
     }
     struct UndoStep {
         fs::path target;
@@ -261,14 +283,24 @@ void Upgrade(const Receipt& oldReceipt, const Receipt& newReceipt, const fs::pat
         bool hadExisting = false;
     };
     std::vector<UndoStep> steps;
-    steps.reserve(targets.size());
+    steps.reserve(oldTargets.size() + newTargets.size());
     try {
-        for (size_t i = 0; i < targets.size(); ++i) {
-            CheckFile(targets[i]);
-            if (fs::exists(targets[i]) && Digest(targets[i]) == newReceipt.hashes[i]) continue;
-            fs::create_directories(targets[i].parent_path());
-            const fs::path temp = targets[i].wstring() + L".independence-fm-installing";
-            const fs::path backup = targets[i].wstring() + L".independence-fm-backup";
+        for (const auto& ot : oldTargets) {
+            if (!inList(newTargets, ot) && fs::exists(ot)) {
+                CheckFile(ot);
+                const fs::path retired = ot.wstring() + L".independence-fm-retired";
+                DeleteFileW(retired.c_str());
+                Require(MoveFileExW(ot.c_str(), retired.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE,
+                        "Could not retire legacy plugin file during upgrade");
+                steps.push_back(UndoStep{ot, retired, true});
+            }
+        }
+        for (size_t i = 0; i < newTargets.size(); ++i) {
+            CheckFile(newTargets[i]);
+            if (fs::exists(newTargets[i]) && Digest(newTargets[i]) == newReceipt.hashes[i]) continue;
+            fs::create_directories(newTargets[i].parent_path());
+            const fs::path temp = newTargets[i].wstring() + L".independence-fm-installing";
+            const fs::path backup = newTargets[i].wstring() + L".independence-fm-backup";
             DeleteFileW(temp.c_str());
             Require(CopyFileW(sources[i].c_str(), temp.c_str(), FALSE) != FALSE,
                     "Copy failed during upgrade. Check permissions and free disk space.");
@@ -276,17 +308,17 @@ void Upgrade(const Receipt& oldReceipt, const Receipt& newReceipt, const fs::pat
                 DeleteFileW(temp.c_str());
                 throw std::runtime_error("Upgrade staging verification failed");
             }
-            UndoStep step{targets[i], backup, fs::exists(targets[i])};
+            UndoStep step{newTargets[i], backup, fs::exists(newTargets[i])};
             if (step.hadExisting) {
                 DeleteFileW(backup.c_str());
-                if (!MoveFileExW(targets[i].c_str(), backup.c_str(), MOVEFILE_WRITE_THROUGH)) {
+                if (!MoveFileExW(newTargets[i].c_str(), backup.c_str(), MOVEFILE_WRITE_THROUGH)) {
                     DeleteFileW(temp.c_str());
                     throw std::runtime_error("Could not back up existing file during upgrade");
                 }
             }
-            if (!MoveFileExW(temp.c_str(), targets[i].c_str(), MOVEFILE_WRITE_THROUGH)) {
+            if (!MoveFileExW(temp.c_str(), newTargets[i].c_str(), MOVEFILE_WRITE_THROUGH)) {
                 DeleteFileW(temp.c_str());
-                if (step.hadExisting) MoveFileExW(backup.c_str(), targets[i].c_str(), MOVEFILE_REPLACE_EXISTING);
+                if (step.hadExisting) MoveFileExW(backup.c_str(), newTargets[i].c_str(), MOVEFILE_REPLACE_EXISTING);
                 throw std::runtime_error("Could not replace file during upgrade");
             }
             steps.push_back(std::move(step));
@@ -362,12 +394,12 @@ void RunElevatedWait(const fs::path& exe, const std::wstring& args) {
 }
 std::wstring List(const Receipt& receipt) {
     std::wstring list;
-    for (const auto& path : receipt.layout.Targets()) list += L"\n" + path.wstring();
+    for (const auto& path : receipt.layout.Targets(receipt.usesBridgeAsi)) list += L"\n" + path.wstring();
     return list;
 }
 void Uninstall(const Receipt& receipt, const fs::path& record) {
     VerifyInstalled(receipt, false);
-    for (const auto& path : receipt.layout.Targets())
+    for (const auto& path : receipt.layout.Targets(receipt.usesBridgeAsi))
         if (fs::exists(path))
             Require(DeleteFileW(path.c_str()) != FALSE, "Removal interrupted. Run Setup again to finish.");
     Require(DeleteFileW(record.c_str()) != FALSE, "Could not remove the installation receipt");
@@ -379,56 +411,74 @@ int SelfTest(const fs::path& parent) {
     const auto root = fs::canonical(parent) / unique;
     Require(fs::create_directory(root), "Could not create test sandbox");
     Receipt fixture;
+    fixture.usesBridgeAsi = true;
     fixture.layout = {root / L"plugins", root / L"用户音乐", root / L"app"};
-    const auto payload = root / L"payload";
-    fs::create_directories(payload);
+    const auto payloadV3 = root / L"payload_v3";
+    const auto payloadLegacy = root / L"payload_legacy";
+    const auto payloadV3Alt = root / L"payload_v3_alt";
+    fs::create_directories(payloadV3);
+    fs::create_directories(payloadLegacy);
+    fs::create_directories(payloadV3Alt);
     fs::create_directories(fixture.layout.app);
     fs::create_directories(fixture.layout.plugins);
     fs::create_directories(fixture.layout.music);
-    const auto targets = fixture.layout.Targets();
-    for (size_t i = 0; i < targets.size(); ++i) {
-        std::ofstream(payload / targets[i].filename()) << "fixture " << i;
-        fixture.hashes[i] = Digest(payload / targets[i].filename());
+    const auto targetsV3 = fixture.layout.Targets(true);
+    for (size_t i = 0; i < targetsV3.size(); ++i) {
+        std::ofstream(payloadV3 / targetsV3[i].filename()) << "v3 fixture " << i;
+        fixture.hashes[i] = Digest(payloadV3 / targetsV3[i].filename());
     }
     const auto playerSong = fixture.layout.music / L"existing-song.mp3";
     std::ofstream(playerSong) << "user file";
-    std::ofstream(targets.front()) << "unmanaged";
+
+    // Guard 1: Unmanaged IVRadioBridge.asi blocks fresh v3 install
+    std::ofstream(targetsV3.front()) << "unmanaged bridge";
     bool rejected = false;
     try { VerifyInstalled(fixture, true); } catch (const std::exception&) { rejected = true; }
-    Require(rejected && fs::exists(targets.front()), "Unmanaged collision was not protected");
-    fs::remove(targets.front());
+    Require(rejected && fs::exists(targetsV3.front()), "Unmanaged IVRadioBridge.asi collision was not protected");
+    fs::remove(targetsV3.front());
+
+    // Guard 2: Unmanaged legacy IVRadioProbe.asi blocks fresh v3 install
+    const fs::path unmanagedLegacyProbe = fixture.layout.plugins / L"IVRadioProbe.asi";
+    std::ofstream(unmanagedLegacyProbe) << "unmanaged probe";
+    rejected = false;
+    try { VerifyInstalled(fixture, true); } catch (const std::exception&) { rejected = true; }
+    Require(rejected && fs::exists(unmanagedLegacyProbe), "Unmanaged legacy IVRadioProbe.asi was not protected");
+    fs::remove(unmanagedLegacyProbe);
+
+    // Fresh v3 install, repair, modified-file guard, and clean uninstall
     VerifyInstalled(fixture, true);
     const auto record = fixture.layout.app / L"install.receipt";
     Store(record, fixture);
     auto loaded = Load(record, fixture.layout.app);
-    Install(loaded, payload);
+    Require(loaded.usesBridgeAsi, "Expected v3 receipt flag on load");
+    Install(loaded, payloadV3);
     VerifyInstalled(loaded, false);
-    Require(std::all_of(targets.begin(), targets.end(), [](const auto& path) { return fs::exists(path); }),
-            "Install did not place all files");
-    fs::remove(targets[2]);
-    Install(loaded, payload);
-    Require(fs::exists(targets[2]), "Repair did not restore the missing file");
-    std::ofstream(targets.front(), std::ios::app) << "modified";
+    Require(std::all_of(targetsV3.begin(), targetsV3.end(), [](const auto& path) { return fs::exists(path); }),
+            "Install did not place all v3 files");
+    fs::remove(targetsV3[2]);
+    Install(loaded, payloadV3);
+    Require(fs::exists(targetsV3[2]), "Repair did not restore the missing file");
+    std::ofstream(targetsV3.front(), std::ios::app) << "modified";
     rejected = false;
     try { Uninstall(loaded, record); } catch (const std::exception&) { rejected = true; }
-    Require(rejected && fs::exists(targets.front()) && fs::exists(record), "Changed file was not protected");
-    fs::remove(targets.front());
+    Require(rejected && fs::exists(targetsV3.front()) && fs::exists(record), "Changed file was not protected");
+    fs::remove(targetsV3.front());
     Uninstall(loaded, record);
-    Require(std::none_of(targets.begin(), targets.end(), [](const auto& path) { return fs::exists(path); })
+    Require(std::none_of(targetsV3.begin(), targetsV3.end(), [](const auto& path) { return fs::exists(path); })
             && fs::exists(playerSong) && !fs::exists(record), "Uninstall changed unrelated or left managed files");
 
-    // Verify IndependenceFM-v1 legacy receipt upgrade to v2 + modified-file protection during upgrade
-    const fs::path payloadV2 = root / L"payload_v2";
-    fs::create_directories(payloadV2);
-    Receipt v1Receipt;
-    v1Receipt.layout = fixture.layout;
-    for (size_t i = 0; i < targets.size(); ++i) {
-        std::ofstream(payload / targets[i].filename()) << "v1 fixture " << i;
-        v1Receipt.hashes[i] = Digest(payload / targets[i].filename());
+    // Legacy v1 -> v3 and v2 -> v3 upgrades (retire IVRadioProbe.{asi,ini} and install IVRadioBridge.{asi,ini})
+    Receipt legacyReceipt;
+    legacyReceipt.usesBridgeAsi = false;
+    legacyReceipt.layout = fixture.layout;
+    const auto targetsLegacy = legacyReceipt.layout.Targets(false);
+    for (size_t i = 0; i < targetsLegacy.size(); ++i) {
+        std::ofstream(payloadLegacy / targetsLegacy[i].filename()) << "legacy fixture " << i;
+        legacyReceipt.hashes[i] = Digest(payloadLegacy / targetsLegacy[i].filename());
     }
     const std::wstring v1Payload = [&] {
-        std::wstring s = L"IndependenceFM-v1\n" + v1Receipt.layout.plugins.wstring() + L"\n" + v1Receipt.layout.music.wstring() + L"\n";
-        for (const auto& h : v1Receipt.hashes) s += h + L"\n";
+        std::wstring s = L"IndependenceFM-v1\n" + legacyReceipt.layout.plugins.wstring() + L"\n" + legacyReceipt.layout.music.wstring() + L"\n";
+        for (const auto& h : legacyReceipt.hashes) s += h + L"\n";
         return s;
     }();
     {
@@ -437,37 +487,49 @@ int SelfTest(const fs::path& parent) {
                      static_cast<std::streamsize>(v1Payload.size() * sizeof(wchar_t)));
     }
     auto loadedV1 = Load(record, fixture.layout.app);
-    Install(loadedV1, payload);
+    Require(!loadedV1.usesBridgeAsi, "Legacy v1 receipt must set usesBridgeAsi=false");
+    Install(loadedV1, payloadLegacy);
+    Upgrade(loadedV1, fixture, payloadV3, record);
+    auto reloadedV3FromV1 = Load(record, fixture.layout.app);
+    Require(reloadedV3FromV1.usesBridgeAsi && reloadedV3FromV1.hashes == fixture.hashes,
+            "v1 -> v3 upgrade did not save IndependenceFM-v3 receipt");
+    Require(!fs::exists(targetsLegacy[0]) && !fs::exists(targetsLegacy[1]),
+            "v1 -> v3 upgrade did not retire legacy IVRadioProbe files");
+    Require(fs::exists(targetsV3[0]) && fs::exists(targetsV3[1]) && fs::exists(playerSong),
+            "v1 -> v3 upgrade missing IVRadioBridge files or affected unrelated song");
+    Uninstall(reloadedV3FromV1, record);
 
-    Receipt v2Receipt;
-    v2Receipt.layout = loadedV1.layout;
-    for (size_t i = 0; i < targets.size(); ++i) {
+    // Legacy v2 -> v3 upgrade + v3 modified-file protection during upgrade
+    Store(record, legacyReceipt);
+    auto loadedV2 = Load(record, fixture.layout.app);
+    Require(!loadedV2.usesBridgeAsi, "Legacy v2 receipt must set usesBridgeAsi=false");
+    Install(loadedV2, payloadLegacy);
+    Upgrade(loadedV2, fixture, payloadV3, record);
+    auto reloadedV3 = Load(record, fixture.layout.app);
+    Require(reloadedV3.usesBridgeAsi && !fs::exists(targetsLegacy[0]) && !fs::exists(targetsLegacy[1]),
+            "v2 -> v3 upgrade did not replace IVRadioProbe with IVRadioBridge");
+
+    Receipt altV3Receipt = fixture;
+    for (size_t i = 0; i < targetsV3.size(); ++i) {
         if (i < 2u || i == 5u) {
-            std::ofstream(payloadV2 / targets[i].filename()) << "v2 upgraded " << i;
+            std::ofstream(payloadV3Alt / targetsV3[i].filename()) << "v3 alt " << i;
         } else {
-            std::ofstream(payloadV2 / targets[i].filename()) << "v1 fixture " << i;
+            std::ofstream(payloadV3Alt / targetsV3[i].filename()) << "v3 fixture " << i;
         }
-        v2Receipt.hashes[i] = Digest(payloadV2 / targets[i].filename());
+        altV3Receipt.hashes[i] = Digest(payloadV3Alt / targetsV3[i].filename());
     }
-    Upgrade(loadedV1, v2Receipt, payloadV2, record);
-    auto reloadedV2 = Load(record, fixture.layout.app);
-    Require(reloadedV2.hashes == v2Receipt.hashes && Digest(targets[5]) == v2Receipt.hashes[5],
-            "In-place upgrade did not update managed files and receipt");
-    Require(fs::exists(playerSong), "In-place upgrade affected unrelated user track");
-
-    // Modified file must block further upgrade safely without overwriting user edit
-    std::ofstream(targets[1], std::ios::app) << "user-edit";
-    const auto editedDigest = Digest(targets[1]);
+    std::ofstream(targetsV3[1], std::ios::app) << "user-edit";
+    const auto editedDigest = Digest(targetsV3[1]);
     rejected = false;
-    try { Upgrade(reloadedV2, loadedV1, payload, record); } catch (const std::exception&) { rejected = true; }
-    Require(rejected && Digest(targets[1]) == editedDigest && Load(record, fixture.layout.app).hashes == v2Receipt.hashes,
-            "Modified file was overwritten or receipt mutated during blocked upgrade");
-    fs::remove(targets[1]);
-    Upgrade(reloadedV2, loadedV1, payload, record);
-    Uninstall(loadedV1, record);
-    Require(!fs::exists(record) && fs::exists(playerSong), "Clean uninstall after upgrade failed");
+    try { Upgrade(reloadedV3, altV3Receipt, payloadV3Alt, record); } catch (const std::exception&) { rejected = true; }
+    Require(rejected && Digest(targetsV3[1]) == editedDigest && Load(record, fixture.layout.app).hashes == fixture.hashes,
+            "Modified file was overwritten or receipt mutated during blocked v3 upgrade");
+    fs::remove(targetsV3[1]);
+    Upgrade(reloadedV3, altV3Receipt, payloadV3Alt, record);
+    Uninstall(altV3Receipt, record);
+    Require(!fs::exists(record) && fs::exists(playerSong), "Clean uninstall after v3 upgrade failed");
 
-    std::ofstream(root / L"PASS.txt") << "install, conflict, repair, v1-to-v2 upgrade, modified-file protection and uninstall passed";
+    std::ofstream(root / L"PASS.txt") << "v3 install, collision guards, repair, v1/v2-to-v3 upgrade, modified-file protection and uninstall passed";
     return 0;
 }
 
@@ -488,10 +550,11 @@ int Run() {
     bool upgradeMode = false;
     if (existing) {
         receipt = Load(record, app);
-        const auto targets = receipt.layout.Targets();
         targetReceipt.layout = receipt.layout;
+        targetReceipt.usesBridgeAsi = true;
+        const auto targets = targetReceipt.layout.Targets(targetReceipt.usesBridgeAsi);
         for (size_t i = 0; i < targets.size(); ++i) targetReceipt.hashes[i] = Digest(payload / targets[i].filename());
-        upgradeMode = (targetReceipt.hashes != receipt.hashes);
+        upgradeMode = (!receipt.usesBridgeAsi) || (targetReceipt.hashes != receipt.hashes);
         const int action = upgradeMode
             ? Dialog(T(L"Existing installation detected.\n\nYes: Upgrade to new version (keep paths)\nNo: Uninstall\nCancel: Close",
                        L"检测到已安装旧版本。\n\n是：原地升级到新版本（保留当前路径）\n否：卸载\n取消：关闭"), MB_YESNOCANCEL | MB_ICONQUESTION)
@@ -501,7 +564,7 @@ int Run() {
         if (action == IDNO) {
             if (Dialog(T(L"Remove these mod files?", L"移除以下 Mod 文件？") + List(receipt), MB_OKCANCEL) != IDOK) return 0;
             Require(!Running(), "Close GTA IV and the tray application before uninstalling.");
-            const fs::path installedLauncher = receipt.layout.Targets().back();
+            const fs::path installedLauncher = receipt.layout.Targets(receipt.usesBridgeAsi).back();
             const fs::path payloadLauncher = payload / L"iv_apple_music_radio.exe";
             const fs::path helperLauncher = fs::exists(payloadLauncher) ? payloadLauncher : installedLauncher;
             RunHiddenWait(helperLauncher, L"--restore-routes --quiet --config-path \"" + (app / L"iv_apple_music_radio.settings.json").wstring() + L"\"");
@@ -535,10 +598,11 @@ int Run() {
         if (choice == IDCANCEL) return 0;
         if (choice == IDNO) music = PickFolder();
         if (music.empty()) return 0;
+        receipt.usesBridgeAsi = true;
         receipt.layout = {fs::weakly_canonical(root / L"plugins"), fs::weakly_canonical(music), app};
         Require(receipt.layout.plugins.parent_path() == root, "The plugins directory redirects outside the game folder");
         VerifyInstalled(receipt, true);
-        const auto targets = receipt.layout.Targets();
+        const auto targets = receipt.layout.Targets(receipt.usesBridgeAsi);
         for (size_t i = 0; i < targets.size(); ++i) receipt.hashes[i] = Digest(payload / targets[i].filename());
         targetReceipt = receipt;
     }
@@ -558,9 +622,9 @@ int Run() {
         VerifyInstalled(receipt, false);
         Install(receipt, payload);
     }
-    const auto launcher = targetReceipt.layout.Targets().back();
-    Dialog(T(L"Ready!\n\nStart your audio source, check 'Options -> Settings -> Zero-Hardware Silent Isolation' in the tray app (reuses Steam Streaming Speakers / VB-Cable automatically, or lets you configure manual routing), then run a Complete Scan in GTA IV and tune to Independence FM.",
-             L"部署完成！\n\n播放音源后启动托盘程序，可在『选项 -> 设置』查看「无硬件静音隔离」（自动复用已装的 Steam Streaming Speakers / VB-Cable，也兼容手工双输出）；再进 GTA IV 执行「完整扫描音乐」并切到 Independence FM。"));
+    const auto launcher = targetReceipt.layout.Targets(targetReceipt.usesBridgeAsi).back();
+    Dialog(T(L"Ready!\n\nStart your audio source, check 'Options -> Settings -> Zero-Hardware Silent Isolation' in the tray app, then run a Complete Scan in GTA IV and tune to Independence FM.\n\nSet GTA IV Audio -> Independence FM Mode to Radio for Apple Music DJ/ads, ESC pause, and B/N hotkey sync (or Sequential for nonstop streaming).",
+             L"部署完成！\n\n播放音源后启动托盘程序，可在『选项 -> 设置』查看「无硬件静音隔离」与「电台模式联动」，进 GTA IV 执行「完整扫描音乐」并切到 Independence FM。\n\n将游戏声音设置中的 Independence FM 设为 Radio（电台）即可联动原版 DJ/广告、ESC 暂停与 B/N 切歌（顺序模式亦可无缝收听）。"));
     ShellExecuteW(nullptr, L"open", launcher.c_str(), nullptr, app.c_str(), SW_SHOWNORMAL);
     return 0;
 }

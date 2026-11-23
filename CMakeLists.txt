@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(GTAIV_AppleMusic_Radio VERSION 0.3.0 LANGUAGES C CXX)
+project(GTAIV_AppleMusic_Radio VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,6 +58,38 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 4)
     target_include_directories(ipc_protocol_selftest PRIVATE src)
     target_link_libraries(ipc_protocol_selftest PRIVATE ole32 uuid winmm)
     set_target_properties(ipc_protocol_selftest PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    )
+
+    add_library(IVRadioBridge SHARED
+        src/route_b_asi_main.cpp
+        src/route_b_hooks.cpp
+        src/route_b_ipc_consumer.cpp
+        src/route_b_offsets.cpp
+    )
+    target_include_directories(IVRadioBridge PRIVATE src)
+    target_link_libraries(IVRadioBridge PRIVATE minhook ole32 uuid)
+    if(MSVC)
+        target_compile_options(IVRadioBridge PRIVATE /W4 /WX)
+    endif()
+    set_target_properties(IVRadioBridge PROPERTIES
+        OUTPUT_NAME "IVRadioBridge"
+        SUFFIX ".asi"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    )
+
+    add_executable(route_b_offline_selftest
+        tests/route_b_offline_selftest.cpp
+        src/route_b_coordinator.cpp
+        src/route_b_offsets.cpp
+        src/route_b_ipc_consumer.cpp
+    )
+    target_include_directories(route_b_offline_selftest PRIVATE src)
+    if(MSVC)
+        target_compile_options(route_b_offline_selftest PRIVATE /W4 /WX)
+    endif()
+    set_target_properties(route_b_offline_selftest PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )
 else()
@@ -124,8 +156,18 @@ else()
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )
 
+    add_library(route_b_smtc STATIC
+        src/route_b_smtc.cpp
+    )
+    target_include_directories(route_b_smtc PRIVATE src)
+    target_link_libraries(route_b_smtc PUBLIC windowsapp)
+    if(MSVC)
+        target_compile_options(route_b_smtc PRIVATE /W4 /WX)
+    endif()
+
     add_executable(iv_apple_music_radio WIN32
         tools/stage_e_launcher.cpp
+        src/route_b_coordinator.cpp
         src/stage_e_engine.cpp
         src/stage_e_diagnostics.cpp
         src/stage_e_routing_isolator.cpp
@@ -134,7 +176,7 @@ else()
     )
     target_include_directories(iv_apple_music_radio PRIVATE src)
     target_link_libraries(iv_apple_music_radio PRIVATE
-        user32 gdi32 shell32 comctl32 comdlg32 mmdevapi ole32 avrt uuid winmm bcrypt setupapi advapi32
+        route_b_smtc user32 gdi32 shell32 comctl32 comdlg32 mmdevapi ole32 avrt uuid winmm bcrypt setupapi advapi32
     )
     if(MSVC)
         target_compile_options(iv_apple_music_radio PRIVATE /W4 /WX)
@@ -145,6 +187,7 @@ else()
 
     add_executable(stage_e_offline_selftest
         tests/stage_e_offline_selftest.cpp
+        src/route_b_coordinator.cpp
         src/stage_e_engine.cpp
         src/stage_e_diagnostics.cpp
         src/stage_e_routing_isolator.cpp
@@ -153,12 +196,26 @@ else()
     )
     target_include_directories(stage_e_offline_selftest PRIVATE src)
     target_link_libraries(stage_e_offline_selftest PRIVATE
-        mmdevapi ole32 avrt uuid winmm bcrypt setupapi advapi32
+        route_b_smtc mmdevapi ole32 avrt uuid winmm bcrypt setupapi advapi32
     )
     if(MSVC)
         target_compile_options(stage_e_offline_selftest PRIVATE /W4 /WX)
     endif()
     set_target_properties(stage_e_offline_selftest PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    )
+
+    add_executable(route_b_offline_selftest
+        tests/route_b_offline_selftest.cpp
+        src/route_b_coordinator.cpp
+        src/route_b_offsets.cpp
+        src/route_b_ipc_consumer.cpp
+    )
+    target_include_directories(route_b_offline_selftest PRIVATE src)
+    if(MSVC)
+        target_compile_options(route_b_offline_selftest PRIVATE /W4 /WX)
+    endif()
+    set_target_properties(route_b_offline_selftest PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )
     add_executable(Setup WIN32 tools/setup.cpp)

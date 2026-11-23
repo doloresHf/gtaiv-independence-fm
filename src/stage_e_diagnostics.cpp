@@ -494,10 +494,10 @@ std::wstring ResolveDefaultSettingsFilePath(const std::wstring& exePathOverride)
 
 namespace {
 
-bool ExtractJsonStringFieldSimple(const std::string& json,
-                                  const char* fieldName,
-                                  std::string& outValue,
-                                  std::string& outError) {
+bool FindJsonFieldValueStart(const std::string& json,
+                             const char* fieldName,
+                             size_t& outPos,
+                             std::string& outError) {
     const std::string keyToken = std::string("\"") + fieldName + "\"";
     const size_t keyPos = json.find(keyToken);
     if (keyPos == std::string::npos) {
@@ -515,6 +515,19 @@ bool ExtractJsonStringFieldSimple(const std::string& json,
     while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\r' || json[pos] == '\n')) {
         ++pos;
     }
+    outPos = pos;
+    return true;
+}
+
+bool ExtractJsonStringFieldSimple(const std::string& json,
+                                  const char* fieldName,
+                                  std::string& outValue,
+                                  std::string& outError) {
+    size_t pos = 0;
+    if (!FindJsonFieldValueStart(json, fieldName, pos, outError)) {
+        return false;
+    }
+    const std::string keyToken = std::string("\"") + fieldName + "\"";
     if (pos >= json.size() || json[pos] != '"') {
         outError = std::string("Expected JSON string value for ") + keyToken;
         return false;
@@ -542,6 +555,32 @@ bool ExtractJsonStringFieldSimple(const std::string& json,
         return false;
     }
     return staged::UnescapeJsonString(rawEscaped, outValue, outError);
+}
+
+bool IsJsonValueDelimiter(char c) noexcept {
+    return c == ',' || c == '}' || c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+bool ExtractJsonBoolFieldSimple(const std::string& json,
+                                const char* fieldName,
+                                bool& outValue,
+                                std::string& outError) {
+    size_t pos = 0;
+    if (!FindJsonFieldValueStart(json, fieldName, pos, outError)) {
+        return false;
+    }
+    if (pos + 4u <= json.size() && json.compare(pos, 4u, "true") == 0 &&
+        (pos + 4u == json.size() || IsJsonValueDelimiter(json[pos + 4u]))) {
+        outValue = true;
+        return true;
+    }
+    if (pos + 5u <= json.size() && json.compare(pos, 5u, "false") == 0 &&
+        (pos + 5u == json.size() || IsJsonValueDelimiter(json[pos + 5u]))) {
+        outValue = false;
+        return true;
+    }
+    outError = std::string("Expected JSON boolean value for \"") + fieldName + "\"";
+    return false;
 }
 
 } // namespace
@@ -625,6 +664,15 @@ bool LoadLauncherSettings(const std::wstring& filePath,
         return false;
     }
 
+    bool enableRadioBridge = true;
+    parseErr.clear();
+    if (ExtractJsonBoolFieldSimple(content, "enable_radio_mode_bridge", enableRadioBridge, parseErr)) {
+        outSettings.enableRadioModeBridge = enableRadioBridge;
+    } else if (!parseErr.empty()) {
+        outError = parseErr;
+        return false;
+    }
+
     if (outSettings.source.mode == AudioSourceMode::CustomProcess) {
         if (outSettings.source.customExeName.empty() && !outSettings.source.customExePath.empty()) {
             outSettings.source.customExeName = staged::ExtractLeafFilename(outSettings.source.customExePath);
@@ -670,6 +718,9 @@ bool SaveLauncherSettings(const std::wstring& filePath,
     json += "  \"version\": " + std::to_string(std::max<uint32_t>(3u, settings.version)) + ",\n";
     json += "  \"language\": \"" + staged::EscapeJsonString(UiLanguageToCode(settings.language)) + "\",\n";
     json += "  \"auto_route_mode\": \"" + staged::EscapeJsonString(AutoRouteModeToCode(settings.autoRouteMode)) + "\",\n";
+    json += "  \"enable_radio_mode_bridge\": ";
+    json += (settings.enableRadioModeBridge ? "true" : "false");
+    json += ",\n";
     json += "  \"source_mode\": \"" + staged::EscapeJsonString(AudioSourceModeToCode(settings.source.mode)) + "\",\n";
     json += "  \"custom_exe_name\": \"" + staged::EscapeJsonString(staged::WideToUtf8(leafExe)) + "\",\n";
     json += "  \"custom_exe_path\": \"" + staged::EscapeJsonString(staged::WideToUtf8(settings.source.customExePath)) + "\"\n";
@@ -2008,11 +2059,25 @@ void RotatingTelemetryLogger::Close() noexcept {
     }
 }
 
+const char* RouteBStateTelemetryName(uint32_t state) noexcept {
+    switch (state) {
+    case 0u: return "inactive";
+    case 1u: return "playing_song";
+    case 2u: return "draining_song_end";
+    case 3u: return "paused_for_dj";
+    case 4u: return "prerolling_for_dj";
+    case 5u: return "paused_for_esc";
+    case 6u: return "skipping_track";
+    default: return "unknown";
+    }
+}
+
 std::string FormatStageETelemetryJsonLine(const staged::TimelineStatsSnapshot& snap,
                                           const staged::TelemetryLineContext& ctx,
                                           const PcmLevelSnapshot& level,
                                           const RoutingDiagnostic& routing,
-                                          const BridgeDiagnosticReport& report) {
+                                          const BridgeDiagnosticReport& report,
+                                          const RouteBTelemetrySummary* routeB) {
     std::string base = staged::FormatTelemetryJsonLine(snap, ctx);
     while (!base.empty() && (base.back() == '\n' || base.back() == '\r' || base.back() == ' ')) {
         base.pop_back();
@@ -2020,9 +2085,9 @@ std::string FormatStageETelemetryJsonLine(const staged::TimelineStatsSnapshot& s
     if (base.empty() || base.back() != '}') {
         return base;
     }
-    base.pop_back(); // Remove closing '}' to append E1 diagnostic fields cleanly
+    base.pop_back(); // Remove closing '}' to append E1/Route B diagnostic fields cleanly
 
-    char extBuf[1280]{};
+    char extBuf[2048]{};
     std::snprintf(
         extBuf,
         sizeof(extBuf),
@@ -2034,7 +2099,7 @@ std::string FormatStageETelemetryJsonLine(const staged::TimelineStatsSnapshot& s
         "\"e1_default_endpoint\":\"%s\","
         "\"e2_auto_route_mode\":\"%s\",\"e2_auto_route_state\":\"%s\","
         "\"e2_virtual_sink_presence\":\"%s\",\"e2_isolated_identities\":%u,"
-        "\"e2_pending_restores\":%u}",
+        "\"e2_pending_restores\":%u",
         staged::EscapeJsonString(staged::GetCurrentUtcIsoString()).c_str(),
         staged::EscapeJsonString(PipelineHeadlineStateName(report.headline)).c_str(),
         staged::EscapeJsonString(RoutingIsolationStateName(routing.state)).c_str(),
@@ -2055,6 +2120,23 @@ std::string FormatStageETelemetryJsonLine(const staged::TimelineStatsSnapshot& s
         static_cast<unsigned>(routing.autoRoute.pendingRestoreCount));
 
     base += extBuf;
+    if (routeB && routeB->valid) {
+        char rbBuf[512]{};
+        std::snprintf(
+            rbBuf,
+            sizeof(rbBuf),
+            ",\"rb_state\":\"%s\",\"rb_online\":%s,\"rb_smtc\":%u,"
+            "\"rb_esc\":%s,\"rb_muted\":%s,\"rb_preroll\":%s,\"rb_track\":\"%s\"",
+            RouteBStateTelemetryName(routeB->state),
+            routeB->gameOnline ? "true" : "false",
+            static_cast<unsigned>(routeB->smtcPlaybackStatus),
+            routeB->escPaused ? "true" : "false",
+            routeB->audioGateMuted ? "true" : "false",
+            routeB->prerollActive ? "true" : "false",
+            staged::EscapeJsonString(TruncateUtf8Safe(routeB->trackTitleUtf8, 80u)).c_str());
+        base += rbBuf;
+    }
+    base += '}';
     return base;
 }
 

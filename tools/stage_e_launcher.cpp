@@ -63,9 +63,10 @@ constexpr int kIdDlgLblSinkStatus     = 5010;
 constexpr int kIdDlgBtnInstallSink    = 5011;
 constexpr int kIdDlgBtnUninstallSink  = 5012;
 constexpr int kIdDlgBtnRestoreRoutes  = 5013;
+constexpr int kIdDlgChkRadioModeBridge = 5014;
 
 constexpr int kBaseClientWidth      = 620;
-constexpr int kBaseClientHeight     = 468;
+constexpr int kBaseClientHeight     = 492;
 
 constexpr wchar_t kSettingsDlgClassName[] = L"GTAIV_AppleMusic_Radio_SettingsDlg";
 constexpr wchar_t kGuideDlgClassName[]    = L"GTAIV_AppleMusic_Radio_GuideDlg";
@@ -134,6 +135,19 @@ struct UiStrings {
     const wchar_t* row3DefaultFmt;
     const wchar_t* row4ActiveFmt;
     const wchar_t* row4IdlePrefix;
+    const wchar_t* row5Prefix;
+    const wchar_t* row5ObserveTag;
+    const wchar_t* row5InactiveOff;
+    const wchar_t* row5InactiveWaiting;
+    const wchar_t* row5InactiveSeq;
+    const wchar_t* row5InactiveShuffle;
+    const wchar_t* row5InactiveUntuned;
+    const wchar_t* row5Playing;
+    const wchar_t* row5Draining;
+    const wchar_t* row5DjPaused;
+    const wchar_t* row5PreRolling;
+    const wchar_t* row5EscPaused;
+    const wchar_t* row5Skipping;
 
     // Tray menu & balloon alerts
     const wchar_t* trayShowPanel;
@@ -181,6 +195,7 @@ struct UiStrings {
     // Virtual Silent Sink & Auto Isolation settings (Route A public release)
     const wchar_t* settingsGroupIsolation;
     const wchar_t* settingsChkAutoRoute;
+    const wchar_t* settingsChkRadioModeBridge;
     const wchar_t* settingsBtnInstallSink;
     const wchar_t* settingsBtnRepairSink;
     const wchar_t* settingsBtnUninstallSink;
@@ -244,6 +259,19 @@ const UiStrings& GetUiStrings(stagee::UiLanguage lang) noexcept {
         L"多音源隔离：按进程树独立捕获 %ls，其他桌面程序与系统提示音不会混入电台",
         L"会话日志：%ls (%.1f KB，目录自动保留最近 %u 份会话)",
         L"日志目录：",
+        L"电台模式联动：",
+        L" [仅观察]",
+        L"已关闭（仅使用纯音乐直通）",
+        L"待命（等待 GTA IV 切入 Independence FM）",
+        L"未接管（游戏当前为顺序模式，建议调回 Radio 电台模式）",
+        L"未接管（游戏当前为随机模式，建议调回 Radio 电台模式）",
+        L"待命（未上车或未切入 Independence FM）",
+        L"播歌中（ESC 自动暂停，B/N 切歌联动 Apple Music）",
+        L"歌曲自然播完收尾（即将插入原版 DJ / 广告）",
+        L"原版 DJ / 广告 / 新闻时段（Apple Music 已自动暂停）",
+        L"预卷下一首（DJ 即将结束，静默无缝衔接）",
+        L"ESC 菜单暂停（Apple Music 已同步暂停）",
+        L"B/N 切歌同步中",
 
         L"显示诊断面板",
         L"设置...",
@@ -288,6 +316,7 @@ const UiStrings& GetUiStrings(stagee::UiLanguage lang) noexcept {
 
         L"无硬件静音隔离 — 虚拟静音端点 (Virtual Silent Sink)",
         L"启动桥接时自动将音源切换至虚拟静音端点（停止/退出或换源时自动恢复外放）",
+        L"启用 GTA IV 电台模式联动（歌间原版 DJ/广告 + ESC 同步暂停 + B/N 切歌）",
         L"安装/导入虚拟端点",
         L"修复 / 更新虚拟端点",
         L"卸载虚拟静音端点",
@@ -317,9 +346,9 @@ const UiStrings& GetUiStrings(stagee::UiLanguage lang) noexcept {
         L"【3. 音频格式注意事项（杜比全景声与独占模式）】\r\n"
         L"  • Apple Music 用户：请在『设置 -> 播放 -> 杜比全景声 (Dolby Atmos)』中设为『关闭』。\r\n"
         L"  • 自定义播放器用户：请使用默认共享音频输出（Shared WASAPI / DirectSound），切勿开启 WASAPI 独占 (Exclusive) 或 ASIO（独占流绕过系统混音器，无法被按进程环回捕获）。\r\n\r\n"
-        L"【4. 缓冲延迟与切歌注意事项】\r\n"
-        L"  • 初次切入电台会有约 5.3 秒静音握手，游戏缓冲使切源或切歌延迟数秒，载体交接时也可能短暂静音。\r\n"
-        L"  • 切歌/暂停请直接操作音乐程序或使用键盘多媒体键；请勿在游戏内按 B / N 键切歌（会触发游戏重置载体并静音 5.3 秒）。\r\n\r\n"
+        L"【4. 电台模式 (Radio) · 缓冲延迟与切歌注意事项】\r\n"
+        L"  • Radio Mode + Apple Music：游戏声音设置选中 Independence FM 的 Radio（电台）模式后，播完一首自动插入原版 DJ/广告/新闻且不打断，按 ESC 暂停自动同步（支持超长暂停不跳歌词），播歌期间可按 N（下一首）/ B（上一首），播 DJ/广告期间按 B/N 自动忽略不打断。\r\n"
+        L"  • Sequential（顺序）/ 自定义音源 / 缓冲提示：非电台模式或非 Apple Music 音源请直接操作播放器或多媒体键（切歌期间勿在顺序模式按 B/N）。初次切入或唤醒存在数秒游戏缓冲。\r\n\r\n"
         L"【5. 状态指示灯与托盘说明】\r\n"
         L"  • 绿色：车内正常供音且音频路由已隔离  |  蓝色：就绪待命（未上车切台或已暂停）\r\n"
         L"  • 橙色：单端点/路由待确认或曲间弱音  |  红色：路由重叠外放、持续无声或互斥冲突\r\n"
@@ -367,6 +396,19 @@ const UiStrings& GetUiStrings(stagee::UiLanguage lang) noexcept {
         L"App Isolation: Per-process tree capture (%ls); other desktop/system sounds will not bleed in",
         L"Session Log: %ls (%.1f KB, keeping latest %u sessions)",
         L"Log Folder: ",
+        L"Radio Mode Sync: ",
+        L" [Observe-Only]",
+        L"Disabled (stream passthrough only)",
+        L"Standby (waiting for GTA IV Independence FM)",
+        L"Inactive (game in Sequential mode; switch to Radio)",
+        L"Inactive (game in Shuffle mode; switch to Radio)",
+        L"Standby (off-air / not tuned to Independence FM)",
+        L"Playing Song (ESC auto-pause, B/N synced to Apple Music)",
+        L"Track Tail Draining (triggering native DJ / Ad break)",
+        L"DJ / Commercial / News Break (Apple Music paused)",
+        L"Pre-rolling Next Track (DJ ending, ~0ms handoff)",
+        L"ESC Pause Menu (Apple Music paused in sync)",
+        L"Syncing B/N Track Skip",
 
         L"Show Diagnostic Panel",
         L"Settings...",
@@ -411,6 +453,7 @@ const UiStrings& GetUiStrings(stagee::UiLanguage lang) noexcept {
 
         L"Zero-Hardware Silent Isolation (Virtual Silent Sink)",
         L"Auto-route target app to virtual silent sink (auto-restore speakers on stop/exit)",
+        L"Enable GTA IV Radio Mode sync (DJ/Ads between songs, ESC pause, B/N skip)",
         L"Install / Import Sink",
         L"Repair Virtual Sink",
         L"Uninstall Sink",
@@ -440,9 +483,9 @@ const UiStrings& GetUiStrings(stagee::UiLanguage lang) noexcept {
         L"[3. Audio Format Notes (Dolby Atmos & Exclusive Mode)]\r\n"
         L"  • Apple Music: Go to 'Settings -> Playback -> Dolby Atmos' and set it to 'Off'.\r\n"
         L"  • Custom Players: Keep standard Shared WASAPI / DirectSound output enabled. Do NOT enable WASAPI Exclusive or ASIO (exclusive streams bypass the Windows audio engine and cannot be captured via process loopback).\r\n\r\n"
-        L"[4. Buffer Latency & Skipping Tracks]\r\n"
-        L"  • Tuning in initially takes ~5.3 s of handshake silence, and the in-game buffer delays source changes by several seconds. Carrier handoffs can also introduce a short silence.\r\n"
-        L"  • Skip or pause tracks directly in your music app or via media keys. Avoid pressing 'B' or 'N' inside GTA IV (which forces a 5.3 s radio track reset).\r\n\r\n"
+        L"[4. Radio Mode, Buffer Latency & Skipping Tracks]\r\n"
+        L"  • Radio Mode + Apple Music: With GTA IV set to Independence FM Radio mode, native DJ/ads/news play automatically between songs, ESC pauses Apple Music in sync (including multi-minute pauses without skipping ahead), and 'N'/'B' skip or go back while a song is playing (safely ignored during DJ/ads).\r\n"
+        L"  • Sequential mode / Custom apps: Skip or pause directly in your player or via media keys instead of pressing 'B' or 'N' inside GTA IV.\r\n\r\n"
         L"[5. Status Colors & System Tray]\r\n"
         L"  • Green: Streaming cleanly in-game with isolated routing  |  Blue: Ready / Paused / Waiting for radio\r\n"
         L"  • Amber: Single-endpoint / routing unconfirmed or brief quiet passage  |  Red: Routing overlap / Silence / Conflict\r\n"
@@ -466,6 +509,7 @@ struct LauncherCliOptions {
     bool uninstallVirtualSink = false;
     bool restoreRoutesOnly = false;
     bool noAutoRouteOverride = false;
+    bool noRadioBridgeOverride = false;
     std::wstring driverDir;
     std::wstring reportJsonPath;
 
@@ -535,6 +579,8 @@ bool ParseCommandLineOptions(LauncherCliOptions& opts, std::string& outError) {
             opts.restoreRoutesOnly = true;
         } else if (arg == L"--no-auto-route") {
             opts.noAutoRouteOverride = true;
+        } else if (arg == L"--no-radio-bridge") {
+            opts.noRadioBridgeOverride = true;
         } else if (arg == L"--driver-dir" && i + 1 < argc) {
             opts.driverDir = argv[++i];
         } else if (arg == L"--report-json" && i + 1 < argc) {
@@ -940,6 +986,7 @@ struct SettingsDialogState {
     stagee::UiLanguage selectedLanguage = stagee::UiLanguage::Auto;
     stagee::AudioSourceConfig selectedSource{};
     stagee::AutoRouteMode selectedAutoRouteMode = stagee::AutoRouteMode::Auto;
+    bool selectedRadioModeBridge = true;
     std::wstring rememberedCustomExeName;
     std::wstring rememberedCustomExePath;
     std::vector<SourcePickerItem> pickerItems;
@@ -953,6 +1000,7 @@ struct SettingsDialogState {
     HWND btnRefreshApps = nullptr;
     HWND btnBrowseExe = nullptr;
     HWND chkAutoRoute = nullptr;
+    HWND chkRadioModeBridge = nullptr;
     HWND lblSinkStatus = nullptr;
     HWND btnInstallSink = nullptr;
     HWND btnUninstallSink = nullptr;
@@ -1519,11 +1567,11 @@ LRESULT CALLBACK SettingsDialogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             RefreshSettingsAudioSessions(st);
             SyncSettingsSourceControls(st);
 
-            // Group 3: Zero-Hardware Silent Isolation (Virtual Silent Sink)
+            // Group 3: Zero-Hardware Silent Isolation (Virtual Silent Sink) & Radio Mode Sync
             HWND grpIso = CreateWindowExW(
                 0, L"BUTTON", s.settingsGroupIsolation,
                 WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-                pad, ScalePx(336, dpi), innerW, ScalePx(120, dpi),
+                pad, ScalePx(336, dpi), innerW, ScalePx(146, dpi),
                 hwnd, nullptr, st->hInst, nullptr);
             SendMessageW(grpIso, WM_SETFONT, reinterpret_cast<WPARAM>(st->fontBold), TRUE);
 
@@ -1539,15 +1587,27 @@ LRESULT CALLBACK SettingsDialogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 (st->selectedAutoRouteMode == stagee::AutoRouteMode::Auto) ? BST_CHECKED : BST_UNCHECKED,
                 0);
 
+            st->chkRadioModeBridge = CreateWindowExW(
+                0, L"BUTTON", s.settingsChkRadioModeBridge,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                pad + ScalePx(14, dpi), ScalePx(384, dpi), innerW - ScalePx(28, dpi), ScalePx(22, dpi),
+                hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdDlgChkRadioModeBridge)), st->hInst, nullptr);
+            SendMessageW(st->chkRadioModeBridge, WM_SETFONT, reinterpret_cast<WPARAM>(st->fontBody), TRUE);
+            SendMessageW(
+                st->chkRadioModeBridge,
+                BM_SETCHECK,
+                st->selectedRadioModeBridge ? BST_CHECKED : BST_UNCHECKED,
+                0);
+
             st->lblSinkStatus = CreateWindowExW(
                 0, L"STATIC", s.settingsSinkNotInstalled,
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
-                pad + ScalePx(14, dpi), ScalePx(384, dpi), innerW - ScalePx(28, dpi), ScalePx(30, dpi),
+                pad + ScalePx(14, dpi), ScalePx(410, dpi), innerW - ScalePx(28, dpi), ScalePx(30, dpi),
                 hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdDlgLblSinkStatus)), st->hInst, nullptr);
             SendMessageW(st->lblSinkStatus, WM_SETFONT, reinterpret_cast<WPARAM>(st->fontSmall), TRUE);
 
             const int isoGap = ScalePx(8, dpi);
-            const int isoBtnY = ScalePx(418, dpi);
+            const int isoBtnY = ScalePx(444, dpi);
             const int isoBtnH = ScalePx(28, dpi);
             const int installW = ScalePx(164, dpi);
             const int uninstallW = ScalePx(132, dpi);
@@ -1581,14 +1641,14 @@ LRESULT CALLBACK SettingsDialogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             HWND lblCfg = CreateWindowExW(
                 0, L"STATIC", cfgLine.c_str(),
                 WS_CHILD | WS_VISIBLE | SS_LEFT | SS_PATHELLIPSIS,
-                pad, ScalePx(464, dpi), innerW, ScalePx(20, dpi),
+                pad, ScalePx(490, dpi), innerW, ScalePx(20, dpi),
                 hwnd, nullptr, st->hInst, nullptr);
             SendMessageW(lblCfg, WM_SETFONT, reinterpret_cast<WPARAM>(st->fontSmall), TRUE);
 
             // Save / Cancel buttons
             const int btnW = ScalePx(108, dpi);
             const int btnH = ScalePx(32, dpi);
-            const int btnY = ScalePx(488, dpi);
+            const int btnY = ScalePx(514, dpi);
             const int cancelX = pad + innerW - btnW;
             const int saveX = cancelX - ScalePx(10, dpi) - btnW;
 
@@ -1690,6 +1750,9 @@ LRESULT CALLBACK SettingsDialogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 st->selectedAutoRouteMode = autoChecked
                     ? stagee::AutoRouteMode::Auto
                     : stagee::AutoRouteMode::Manual;
+
+                st->selectedRadioModeBridge =
+                    !st->chkRadioModeBridge || (SendMessageW(st->chkRadioModeBridge, BM_GETCHECK, 0, 0) == BST_CHECKED);
 
                 const bool customChecked =
                     st->radioCustomApp && (SendMessageW(st->radioCustomApp, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -2261,7 +2324,7 @@ private:
 
         const int pad = ScalePx(16, dpi_);
         const int gap = ScalePx(10, dpi_);
-        const int btnY = ScalePx(402, dpi_);
+        const int btnY = ScalePx(426, dpi_);
         const int btnH = ScalePx(32, dpi_);
         const int totalW = ScalePx(kBaseClientWidth, dpi_) - 2 * pad;
         const int btnW = (totalW - 3 * gap) / 4;
@@ -2419,6 +2482,7 @@ private:
         st.routeJournalPath = opts_.engine.routeJournalPath;
         st.selectedLanguage = activeLanguagePref_;
         st.selectedAutoRouteMode = engine_.IsRunning() ? engine_.GetAutoRouteMode() : settings_.autoRouteMode;
+        st.selectedRadioModeBridge = engine_.IsRunning() ? engine_.GetRadioModeBridgeEnabled() : settings_.enableRadioModeBridge;
         st.selectedSource = engine_.IsRunning() ? engine_.GetAudioSource() : settings_.source;
         if (st.selectedSource.mode == stagee::AudioSourceMode::CustomProcess) {
             st.rememberedCustomExeName = st.selectedSource.customExeName;
@@ -2426,7 +2490,7 @@ private:
         }
 
         const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
-        RECT rc{ 0, 0, ScalePx(540, st.dpi), ScalePx(532, st.dpi) };
+        RECT rc{ 0, 0, ScalePx(540, st.dpi), ScalePx(558, st.dpi) };
         AdjustWindowRectEx(&rc, style, FALSE, WS_EX_DLGMODALFRAME);
         const int winW = rc.right - rc.left;
         const int winH = rc.bottom - rc.top;
@@ -2452,15 +2516,20 @@ private:
             settings_.language = st.selectedLanguage;
             settings_.source = st.selectedSource;
             settings_.autoRouteMode = st.selectedAutoRouteMode;
+            settings_.enableRadioModeBridge = st.selectedRadioModeBridge;
             opts_.engine.source = st.selectedSource;
             opts_.engine.autoRouteMode = opts_.noAutoRouteOverride
                 ? stagee::AutoRouteMode::Manual
                 : st.selectedAutoRouteMode;
+            opts_.engine.enableRadioModeBridge = opts_.noRadioBridgeOverride
+                ? false
+                : st.selectedRadioModeBridge;
             opts_.engine.targetExe.clear();
             opts_.engine.targetPid = 0u;
 
             engine_.SetAudioSource(st.selectedSource);
             engine_.SetAutoRouteMode(opts_.engine.autoRouteMode);
+            engine_.SetRadioModeBridgeEnabled(opts_.engine.enableRadioModeBridge);
             ApplyLanguageAndRefreshUi(st.selectedLanguage);
 
             std::string saveErr;
@@ -2526,24 +2595,24 @@ private:
         std::wstring text;
         if (en) {
             text =
-                L"GTA IV Independence FM — Audio Bridge (v0.3.0-beta.1)\n\n"
+                L"GTA IV Independence FM — Audio Bridge (v0.4.0-beta.1)\n\n"
                 L"Active Audio Source:\n  " + curSrcW + L"\n\n"
                 L"Architecture:\n"
                 L"  • x64 WASAPI Per-Process Tree Loopback (48 kHz / 2ch / 16-bit PCM)\n"
                 L"  • Per-App Auto Silent Sink Isolation + Exit Auto-Restore (AudioPolicyConfig)\n"
-                L"  • Lock-Free Cross-Bitness Shared Memory Ring Buffer\n"
-                L"  • x86 WMF IWMSyncReader In-Game Radio Consumer (IVRadioProbe.asi)\n\n"
+                L"  • Windows SMTC Coordinator + x86 Radio Mode Engine Sync (IVRadioBridge.asi)\n"
+                L"  • Lock-Free Cross-Bitness Shared Memory Ring Buffer\n\n"
                 L"Settings File:\n  " + settingsFilePath_ + L"\n\n"
                 L"Session Log Directory:\n  " + logDir;
         } else {
             text =
-                L"GTA IV Independence FM — Audio Bridge (v0.3.0-beta.1)\n\n"
+                L"GTA IV Independence FM — Audio Bridge (v0.4.0-beta.1)\n\n"
                 L"当前捕获音源：\n  " + curSrcW + L"\n\n"
                 L"管线架构：\n"
                 L"  • x64 WASAPI 按进程树隔离环回捕获 (48 kHz / 2ch / 16-bit PCM)\n"
                 L"  • AudioPolicyConfig 单进程自动静音端点隔离与退出自恢复\n"
-                L"  • 跨位数无锁共享内存环形缓冲 (Local\\GTAIV_StageC_IpcRing_v1)\n"
-                L"  • x86 WMF IWMSyncReader 游戏车载电台消费端 (IVRadioProbe.asi)\n\n"
+                L"  • Windows SMTC 曲终协同 + x86 游戏车载电台联动 (IVRadioBridge.asi)\n"
+                L"  • 跨位数无锁共享内存环形缓冲 (Local\\GTAIV_StageC_IpcRing_v1)\n\n"
                 L"配置文件路径：\n  " + settingsFilePath_ + L"\n\n"
                 L"会话日志目录：\n  " + logDir;
         }
@@ -2863,7 +2932,7 @@ private:
         }
 
         // 3. Live PCM Meter & Telemetry Details Card
-        const RECT card3{ pad, ScalePx(226, dpi_), cw - pad, ScalePx(390, dpi_) };
+        const RECT card3{ pad, ScalePx(226, dpi_), cw - pad, ScalePx(414, dpi_) };
         DrawCardBox(memDc, card3, RGB(255, 255, 255), RGB(220, 226, 236), RGB(100, 116, 139), 0);
 
         {
@@ -3008,13 +3077,61 @@ private:
                     : opts_.engine.logger.logDirectory;
                 drawRow(std::wstring(s.row4IdlePrefix) + defDir);
             }
+
+            // Row 5: Independence FM Radio Mode Sync
+            {
+                const auto& rb = latestSnap_.routeB;
+                const wchar_t* stateLabel = s.row5InactiveWaiting;
+                switch (rb.state) {
+                case routeb::BridgeState::Inactive:
+                    if (!rb.bridgeEnabled) {
+                        stateLabel = s.row5InactiveOff;
+                    } else if (!rb.gameOnline) {
+                        stateLabel = s.row5InactiveWaiting;
+                    } else if (rb.gameRadioMode == 1u) {
+                        stateLabel = s.row5InactiveSeq;
+                    } else if (rb.gameRadioMode == 2u) {
+                        stateLabel = s.row5InactiveShuffle;
+                    } else if (!rb.stationTuned) {
+                        stateLabel = s.row5InactiveUntuned;
+                    }
+                    break;
+                case routeb::BridgeState::PlayingSong:
+                    stateLabel = s.row5Playing;
+                    break;
+                case routeb::BridgeState::DrainingSongEnd:
+                    stateLabel = s.row5Draining;
+                    break;
+                case routeb::BridgeState::PausedForDj:
+                    stateLabel = s.row5DjPaused;
+                    break;
+                case routeb::BridgeState::PreRollingForDj:
+                    stateLabel = s.row5PreRolling;
+                    break;
+                case routeb::BridgeState::PausedForEsc:
+                    stateLabel = s.row5EscPaused;
+                    break;
+                case routeb::BridgeState::SkippingTrack:
+                    stateLabel = s.row5Skipping;
+                    break;
+                }
+                std::wstring r5 = std::wstring(s.row5Prefix) + stateLabel;
+                if (rb.observeOnly) {
+                    r5 += s.row5ObserveTag;
+                }
+                if (!rb.trackTitleUtf8.empty()) {
+                    r5 += L"  \x00B7  ";
+                    r5 += staged::Utf8ToWide(rb.trackTitleUtf8);
+                }
+                drawRow(r5);
+            }
         }
 
         // 4. Footer Tray & Menu Hint
         {
             SelectObject(memDc, fontSmall_);
             SetTextColor(memDc, RGB(107, 114, 128));
-            RECT footRc{ pad, ScalePx(440, dpi_), cw - pad, ch - ScalePx(4, dpi_) };
+            RECT footRc{ pad, ScalePx(464, dpi_), cw - pad, ch - ScalePx(4, dpi_) };
             DrawTextW(
                 memDc,
                 s.footerHint,
@@ -3185,6 +3302,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         opts.engine.autoRouteMode = persistedSettings.autoRouteMode;
         opts.engine.enableAutoRouting = true;
     }
+    opts.engine.enableRadioModeBridge = opts.noRadioBridgeOverride
+        ? false
+        : persistedSettings.enableRadioModeBridge;
 
     if (opts.installVirtualSink || opts.uninstallVirtualSink) {
         const stagee::VirtualSinkInstallResult res = opts.installVirtualSink
@@ -3221,9 +3341,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     if (opts.showHelp) {
         const bool en = (stagee::ResolveEffectiveLanguage(opts.engine.language) == stagee::UiLanguage::EnUs);
         const wchar_t* helpTextZh =
-            L"GTA IV Independence FM — Audio Bridge (v0.3.0-beta.1)\n\n"
+            L"GTA IV Independence FM — Audio Bridge (v0.4.0-beta.1)\n\n"
             L"日常使用：直接双击 iv_apple_music_radio.exe 即可自动发现配置的发声程序并驻留系统托盘。\n"
-            L"界面顶部菜单栏『选项 -> 设置』支持零硬件静音隔离、切换语言（中/英）以及选择兼容的 Windows 音频应用 (Stream Anything)。\n\n"
+            L"界面顶部菜单栏『选项 -> 设置』支持零硬件静音隔离、电台模式联动开关、切换语言（中/英）以及选择兼容的 Windows 音频应用 (Stream Anything)。\n\n"
             L"可选命令行参数：\n"
             L"  --lang <auto|zh|en>       指定本次界面语言（也可在界面『选项 -> 设置』中永久保存）\n"
             L"  --source-exe <exe|path>   指定本次捕获的发声程序（例如 VLC.exe 或完整路径）\n"
@@ -3232,6 +3352,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             L"  --uninstall-virtual-sink  卸载虚拟静音端点（需管理员）\n"
             L"  --restore-routes          立即恢复之前隔离的音频应用默认输出\n"
             L"  --no-auto-route           本次禁用自动单进程路由隔离\n"
+            L"  --no-radio-bridge         本次禁用 GTA IV 电台模式联动 (SMTC / DJ / ESC / B / N)\n"
             L"  --start-minimized         启动后直接最小化驻留托盘\n"
             L"  --no-auto-start           打开面板但不自动启动桥接\n"
             L"  --log-dir <dir>           自定义会话日志目录\n"
@@ -3240,9 +3361,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             L"  --telemetry-jsonl <path>  固定写入单个遥测文件路径\n"
             L"  --headless                无界面后台运行模式（供自动化测试与脚本调用）";
         const wchar_t* helpTextEn =
-            L"GTA IV Independence FM — Audio Bridge (v0.3.0-beta.1)\n\n"
+            L"GTA IV Independence FM — Audio Bridge (v0.4.0-beta.1)\n\n"
             L"Daily Usage: Double-click iv_apple_music_radio.exe to auto-discover your configured audio app and stay in the system tray.\n"
-            L"Use 'Options -> Settings' to manage zero-hardware silent isolation, switch language, or pick a compatible Windows audio app (Stream Anything).\n\n"
+            L"Use 'Options -> Settings' to manage zero-hardware silent isolation, Radio Mode sync, language, or compatible Windows audio apps (Stream Anything).\n\n"
             L"Optional CLI Flags:\n"
             L"  --lang <auto|zh|en>       Override UI language for this run (or persist via Options -> Settings)\n"
             L"  --source-exe <exe|path>   Override target audio executable for this run (e.g. VLC.exe)\n"
@@ -3251,6 +3372,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             L"  --uninstall-virtual-sink  Uninstall the virtual sink device (Admin required)\n"
             L"  --restore-routes          Immediately restore persisted per-app audio routes from journal\n"
             L"  --no-auto-route           Disable automatic per-process endpoint isolation for this run\n"
+            L"  --no-radio-bridge         Disable GTA IV Radio Mode SMTC sync for this run\n"
             L"  --start-minimized         Start minimized directly in the system tray\n"
             L"  --no-auto-start           Open the panel without auto-starting the bridge\n"
             L"  --log-dir <dir>           Custom session log directory\n"

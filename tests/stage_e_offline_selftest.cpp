@@ -1087,6 +1087,23 @@ void TestLocalizationAndSettings(const std::wstring& launcherExePath) {
         const std::string jsonLine = stagee::FormatStageETelemetryJsonLine(tl, tctx, in.level, in.routing, rep);
         CHECK(jsonLine.find("\"e1_headline\":\"streaming_in_game\"") != std::string::npos);
         CHECK(jsonLine.find("\"e1_routing\":\"isolated_ok\"") != std::string::npos);
+
+        stagee::RouteBTelemetrySummary rbSum{};
+        rbSum.valid              = true;
+        rbSum.state              = 5u;
+        rbSum.gameOnline         = true;
+        rbSum.escPaused          = true;
+        rbSum.audioGateMuted     = false;
+        rbSum.prerollActive      = false;
+        rbSum.smtcPlaybackStatus = 5u;
+        rbSum.trackTitleUtf8     = "Track Title Example";
+        const std::string rbJsonLine = stagee::FormatStageETelemetryJsonLine(
+            tl, tctx, in.level, in.routing, rep, &rbSum);
+        CHECK(rbJsonLine.find("\"rb_state\":\"paused_for_esc\"") != std::string::npos);
+        CHECK(rbJsonLine.find("\"rb_online\":true") != std::string::npos);
+        CHECK(rbJsonLine.find("\"rb_smtc\":5") != std::string::npos);
+        CHECK(rbJsonLine.find("\"rb_esc\":true") != std::string::npos);
+        CHECK(rbJsonLine.find("\"rb_track\":\"Track Title Example\"") != std::string::npos);
     }
 
     // 6d. Live StageEBridgeEngine::SetLanguage hot-switch & headless --config-path / --lang verification
@@ -1827,13 +1844,23 @@ void TestStageE2ZeroHardwareIsolation(const std::wstring& launcherExePath) {
             err));
         CHECK(stagee::LoadLauncherSettings(v2Legacy, loaded, err));
         CHECK(loaded.autoRouteMode == stagee::AutoRouteMode::Auto); // Default Auto!
+        CHECK(loaded.enableRadioModeBridge == true); // Default true when omitted!
 
         const std::wstring v3Path = tempRoot + L"\\v3_manual.settings.json";
         loaded.autoRouteMode = stagee::AutoRouteMode::Manual;
+        loaded.enableRadioModeBridge = false;
         CHECK(stagee::SaveLauncherSettings(v3Path, loaded, err));
         stagee::LauncherSettings reloaded{};
         CHECK(stagee::LoadLauncherSettings(v3Path, reloaded, err));
         CHECK(reloaded.autoRouteMode == stagee::AutoRouteMode::Manual);
+        CHECK(reloaded.enableRadioModeBridge == false);
+
+        const std::wstring badBoolPath = tempRoot + L"\\v3_bad_bool.settings.json";
+        CHECK(staged::WriteTextFileAtomic(
+            badBoolPath,
+            "{\n  \"version\": 3,\n  \"enable_radio_mode_bridge\": \"yes\"\n}\n",
+            err));
+        CHECK(!stagee::LoadLauncherSettings(badBoolPath, reloaded, err));
     }
 
     // 8f. Route A WHQL driver package verification (missing/tamper-reject + host probe) & Win32 AudioPolicyConfig live COM probe

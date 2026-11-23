@@ -74,6 +74,7 @@ struct LauncherSettings {
     UiLanguage language = UiLanguage::Auto;
     AudioSourceConfig source{};
     AutoRouteMode autoRouteMode = AutoRouteMode::Auto;
+    bool enableRadioModeBridge = true;
 };
 
 // Returns '<exeDir>\iv_apple_music_radio.settings.json' (or relative fallback when exeDir empty).
@@ -384,12 +385,26 @@ private:
     uint32_t retainedSessionsCount_ = 0u;
 };
 
+struct RouteBTelemetrySummary {
+    bool        valid              = false;
+    uint32_t    state              = 0u;
+    bool        gameOnline         = false;
+    bool        escPaused          = false;
+    bool        audioGateMuted     = false;
+    bool        prerollActive      = false;
+    uint32_t    smtcPlaybackStatus = 0u;
+    std::string trackTitleUtf8;
+};
+
+const char* RouteBStateTelemetryName(uint32_t state) noexcept;
+
 // Formats a single JSONL line preserving 100% of Stage D's FormatTelemetryJsonLine fields
-// while appending Stage E1 level, silence, and split-endpoint routing diagnostics.
+// while appending Stage E1 level, silence, split-endpoint routing, and optional Route B diagnostics.
 std::string FormatStageETelemetryJsonLine(const staged::TimelineStatsSnapshot& snap,
                                           const staged::TelemetryLineContext& ctx,
                                           const PcmLevelSnapshot& level,
                                           const RoutingDiagnostic& routing,
-                                          const BridgeDiagnosticReport& report);
+                                          const BridgeDiagnosticReport& report,
+                                          const RouteBTelemetrySummary* routeB = nullptr);
 
 } // namespace stagee

@@ -2,7 +2,7 @@ param(
     [string]$CMake = 'cmake',
     [string]$Python = 'python',
     [string]$OutputDirectory,
-    [string]$Version = 'v0.3.0-beta.1'
+    [string]$Version = 'v0.4.0-beta.1'
 )
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
@@ -41,19 +41,23 @@ $win = Join-Path $build 'Win32/bin/Release'
 $x64 = Join-Path $build 'x64/bin/Release'
 $producer = Join-Path $x64 'iv_stage_c_producer.exe'
 $launcher = Join-Path $x64 'iv_apple_music_radio.exe'
-$asi = Join-Path $win 'IVRadioProbe.asi'
+$probeAsi = Join-Path $win 'IVRadioProbe.asi'
+$asi = Join-Path $win 'IVRadioBridge.asi'
 $setup = Join-Path $x64 'Setup.exe'
-if ((Get-PeMachineTag $asi) -ne 'x86') { throw "Expected x86 PE for IVRadioProbe.asi" }
+if ((Get-PeMachineTag $asi) -ne 'x86') { throw "Expected x86 PE for IVRadioBridge.asi" }
+if ((Get-PeMachineTag $probeAsi) -ne 'x86') { throw "Expected x86 PE for IVRadioProbe.asi" }
 if ((Get-PeMachineTag $launcher) -ne 'x64') { throw "Expected x64 PE for iv_apple_music_radio.exe" }
 if ((Get-PeMachineTag $setup) -ne 'x64') { throw "Expected x64 PE for Setup.exe" }
 Invoke-Checked (Join-Path $win 'ipc_protocol_selftest.exe') @('--producer-exe',$producer)
 Invoke-Checked $Python @('tools/gen_stage_b_wav.py')
-Invoke-Checked (Join-Path $win 'wmf_selftest.exe') @($asi,(Join-Path $PSScriptRoot 'assets'),'--producer-exe',$producer)
+Invoke-Checked (Join-Path $win 'wmf_selftest.exe') @($probeAsi,(Join-Path $PSScriptRoot 'assets'),'--producer-exe',$producer)
 Invoke-Checked (Join-Path $x64 'stage_d_offline_selftest.exe') @()
 Invoke-Checked (Join-Path $x64 'stage_d_bridge_selftest.exe') @('--write-sample-telemetry',(Join-Path $build 'd.jsonl'))
 Invoke-Checked $Python @('tools/analyze_stage_d_telemetry.py',(Join-Path $build 'd.jsonl'),'--expect-ppm','200','--ppm-tolerance','15','--require-clean-shutdown','--max-underruns','0','--max-overruns','0')
 Invoke-Checked (Join-Path $x64 'stage_e_offline_selftest.exe') @('--launcher-exe',$launcher,'--write-sample-telemetry',(Join-Path $build 'e.jsonl'))
 Invoke-Checked $Python @('tools/analyze_stage_d_telemetry.py',(Join-Path $build 'e.jsonl'),'--expect-ppm','0','--ppm-tolerance','5','--require-clean-shutdown','--max-underruns','0','--max-overruns','0')
+Invoke-Checked (Join-Path $win 'route_b_offline_selftest.exe') @()
+Invoke-Checked (Join-Path $x64 'route_b_offline_selftest.exe') @()
 $setupTest = Start-Process -FilePath $setup -ArgumentList @("--selftest", ('"' + $build + '"')) -WindowStyle Hidden -Wait -PassThru
 if ($setupTest.ExitCode -ne 0) { throw "Setup sandbox self-test failed (exit=$($setupTest.ExitCode))" }
 $staging = Join-Path $build ('package-' + [guid]::NewGuid().ToString('N'))
@@ -64,7 +68,7 @@ Invoke-Checked $Python @('tools/gen_stage_d_carriers.py','--out-dir',$carriers,'
 foreach ($index in '01','02','03') {
     Copy-Item -LiteralPath (Join-Path $carriers "IV_Radio_Stream_$index.mp3") -Destination $payload
 }
-Copy-Item -LiteralPath $launcher,$asi,(Join-Path $PSScriptRoot 'release/IVRadioProbe.ini') -Destination $payload
+Copy-Item -LiteralPath $launcher,$asi,(Join-Path $PSScriptRoot 'release/IVRadioBridge.ini') -Destination $payload
 Copy-Item -LiteralPath $setup,'QUICKSTART.md','QUICKSTART-zh-CN.md','CHANGELOG.md','LICENSE' -Destination $staging
 Copy-Item -LiteralPath 'third_party/minhook/LICENSE.txt' -Destination (Join-Path $staging 'THIRD-PARTY-NOTICES.txt')
 $forbidden = Get-ChildItem -LiteralPath $staging -Recurse -File | Where-Object { $_.Extension -in '.sys','.cat','.inf' }

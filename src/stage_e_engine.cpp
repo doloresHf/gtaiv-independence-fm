@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <vector>
 
 namespace stagee {
@@ -1158,6 +1159,14 @@ AutoRouteMode StageEBridgeEngine::GetAutoRouteMode() const noexcept {
     return static_cast<AutoRouteMode>(autoRouteMode_.load(std::memory_order_acquire));
 }
 
+void StageEBridgeEngine::SetRadioModeBridgeEnabled(bool enabled) noexcept {
+    radioModeBridgeEnabled_.store(enabled, std::memory_order_release);
+}
+
+bool StageEBridgeEngine::GetRadioModeBridgeEnabled() const noexcept {
+    return radioModeBridgeEnabled_.load(std::memory_order_acquire);
+}
+
 RouteRestoreSummary StageEBridgeEngine::RestoreAllAutoRoutesNow(const std::wstring& journalPathOverride) {
     ScopedCoInit co(COINIT_MULTITHREADED);
     const std::wstring jPath = journalPathOverride.empty()
@@ -1176,6 +1185,7 @@ bool StageEBridgeEngine::Start(const StageEEngineOptions& opts, std::string& out
     SetAudioSource(effectiveSrc);
     SetLanguage(opts.language);
     autoRouteMode_.store(static_cast<uint8_t>(opts.autoRouteMode), std::memory_order_release);
+    radioModeBridgeEnabled_.store(opts.enableRadioModeBridge, std::memory_order_release);
 
     if (running_.load(std::memory_order_acquire)) {
         return true;
@@ -1413,6 +1423,51 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
     RollingLevelMeter levelMeter;
     BridgeStatusTracker statusTracker;
 
+    // Route B Control SHM (CL0 static header, CL1..3 Game->Host, CL4..7 Host->Game)
+    ScopedHandle hCtrlMapping;
+    void* ctrlView = nullptr;
+    routeb::RadioBridgeCtrlBlock* ctrlBlock = nullptr;
+    {
+        const std::wstring ctrlName = opts.ctrlMappingName.empty()
+            ? std::wstring(routeb::kDefaultCtrlMappingName)
+            : opts.ctrlMappingName;
+        HANDLE rawCtrlMap = CreateFileMappingW(
+            INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0u, routeb::kCtrlBytes, ctrlName.c_str());
+        if (rawCtrlMap != nullptr) {
+            const bool ctrlExisted = (GetLastError() == ERROR_ALREADY_EXISTS);
+            hCtrlMapping.Reset(rawCtrlMap);
+            ctrlView = MapViewOfFile(hCtrlMapping.Get(), FILE_MAP_ALL_ACCESS, 0u, 0u, routeb::kCtrlBytes);
+            if (ctrlView != nullptr) {
+                ctrlBlock = static_cast<routeb::RadioBridgeCtrlBlock*>(ctrlView);
+                const bool validExisting =
+                    ctrlExisted &&
+                    routeb::AtomicLoad32(&ctrlBlock->magic) == routeb::kCtrlMagic &&
+                    routeb::AtomicLoad32(&ctrlBlock->total_bytes) == routeb::kCtrlBytes;
+                if (!validExisting) {
+                    std::memset(ctrlBlock, 0, routeb::kCtrlBytes);
+                    routeb::AtomicStore32(&ctrlBlock->version, routeb::kCtrlVersion);
+                    routeb::AtomicStore32(&ctrlBlock->total_bytes, routeb::kCtrlBytes);
+                    routeb::AtomicStore32(&ctrlBlock->flags, 0u);
+                    routeb::AtomicStoreU64(&ctrlBlock->qpc_freq, qpcFreq);
+                    routeb::AtomicStore32(&ctrlBlock->magic, routeb::kCtrlMagic);
+                } else {
+                    // Preserve live CL1..3 Game fields if ASI created the mapping first; clear stale Host CL4..7.
+                    std::memset(reinterpret_cast<uint8_t*>(ctrlBlock) + 256u, 0, 256u);
+                }
+            }
+        }
+    }
+
+    std::unique_ptr<routeb::ISmtcTransport> smtcTransport = routeb::CreateWinRtAppleMusicSmtc();
+    if (smtcTransport) {
+        smtcTransport->Start();
+    }
+    routeb::RouteBCoordinator routeBCoordinator(*smtcTransport);
+    routeb::RouteBCoordinatorStatus curRouteB{};
+    uint64_t lastAudibleCommitFrame = 0ULL;
+    uint64_t runFirstAudibleCommitFrame = 0ULL;
+    bool prevPacketAudible = false;
+
     const uint64_t prefillFrames = std::min<uint64_t>(
         staged::MulDivFloorU64(static_cast<uint64_t>(opts.prefillMs), staged::kOutputSampleRate, 1000ULL),
         static_cast<uint64_t>(stagec::kRingCapacityFrames / 2u));
@@ -1559,6 +1614,7 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
                                const staged::TimelineStatsSnapshot& tlSnap,
                                const staged::IpcTelemetryCounters& ipcSnap,
                                const PcmLevelSnapshot& lvl,
+                               const routeb::RouteBCoordinatorStatus& routeBStatus,
                                const BridgeDiagnosticReport& rep) {
         std::lock_guard<std::mutex> lock(stateMu_);
         snapshot_.running = isEngineRunning;
@@ -1583,18 +1639,43 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
         snapshot_.ipc = ipcSnap;
         snapshot_.level = lvl;
         snapshot_.routing = cachedRouting;
+        snapshot_.routeB = routeBStatus;
         snapshot_.report = rep;
         lastDiagInput_ = latestBuiltInput;
         lastDiagTracker_ = statusTracker;
     };
 
+    auto makeRouteBSummary = [](const routeb::RouteBCoordinatorStatus& rb) {
+        RouteBTelemetrySummary s{};
+        s.valid              = true;
+        s.state              = static_cast<uint32_t>(rb.state);
+        s.gameOnline         = rb.gameOnline;
+        s.escPaused          = rb.escPaused;
+        s.audioGateMuted     = rb.audioGateMuted;
+        s.prerollActive      = rb.prerollActive;
+        s.smtcPlaybackStatus = rb.smtcPlaybackStatus;
+        s.trackTitleUtf8     = rb.trackTitleUtf8;
+        return s;
+    };
+
     {
+        curRouteB = routeBCoordinator.Tick(
+            startQpcLi.QuadPart,
+            static_cast<int64_t>(qpcFreq),
+            (curSourceCfg.mode == AudioSourceMode::AppleMusicPreset),
+            radioModeBridgeEnabled_.load(std::memory_order_acquire),
+            stagec::AtomicLoadU64(&hdr->write_commit_frame),
+            ctrlBlock,
+            lastAudibleCommitFrame,
+            runFirstAudibleCommitFrame);
         const staged::TimelineStatsSnapshot initSnap = bridge.Snapshot();
         const PcmLevelSnapshot initLevel = levelMeter.Snapshot(start100ns);
         const BridgeDiagnosticReport initRep = buildDiagReport(start100ns, initLevel, initSnap, telCtx.ipc, true);
+        const RouteBTelemetrySummary initRbSummary = makeRouteBSummary(curRouteB);
         telCtx.kind = "startup";
-        telemetryLogger.WriteLine(FormatStageETelemetryJsonLine(initSnap, telCtx, initLevel, cachedRouting, initRep));
-        publishSnapshot(0.0, true, initSnap, telCtx.ipc, initLevel, initRep);
+        telemetryLogger.WriteLine(FormatStageETelemetryJsonLine(
+            initSnap, telCtx, initLevel, cachedRouting, initRep, &initRbSummary));
+        publishSnapshot(0.0, true, initSnap, telCtx.ipc, initLevel, curRouteB, initRep);
     }
 
     running_.store(true, std::memory_order_release);
@@ -1618,6 +1699,9 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
     uint64_t prevRestart = 0ULL;
     PipelineHeadlineState prevHeadline = PipelineHeadlineState::WaitingForAppleMusic;
     RoutingIsolationState prevRoutingState = RoutingIsolationState::Unknown;
+    routeb::BridgeState prevRouteBState = curRouteB.state;
+    bool prevRouteBGameOnline = curRouteB.gameOnline;
+    uint32_t prevRouteBSmtcStatus = curRouteB.smtcPlaybackStatus;
     bool hasPrevDiagEdge = false;
 
     std::vector<CaptureQueueItem> drained;
@@ -1654,6 +1738,20 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
 
         captureQueue.DrainAll(drained);
 
+        if (!drained.empty()) {
+            LARGE_INTEGER preDrainQpcLi{};
+            QueryPerformanceCounter(&preDrainQpcLi);
+            curRouteB = routeBCoordinator.Tick(
+                preDrainQpcLi.QuadPart,
+                static_cast<int64_t>(qpcFreq),
+                (curSourceCfg.mode == AudioSourceMode::AppleMusicPreset),
+                radioModeBridgeEnabled_.load(std::memory_order_acquire),
+                stagec::AtomicLoadU64(&hdr->write_commit_frame),
+                ctrlBlock,
+                lastAudibleCommitFrame,
+                runFirstAudibleCommitFrame);
+        }
+
         for (const auto& item : drained) {
             if (item.type == CaptureQueueItem::Type::StreamStarted) {
                 bridge.OnStreamStarted(item.sampleRate, item.convDelayFrames48k);
@@ -1681,11 +1779,28 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
                 const staged::TimelineStatsSnapshot sSnap = bridge.Snapshot();
                 const PcmLevelSnapshot sLvl = levelMeter.Snapshot(ev100ns);
                 const BridgeDiagnosticReport sRep = buildDiagReport(ev100ns, sLvl, sSnap, telCtx.ipc, true);
-                telemetryLogger.WriteLine(FormatStageETelemetryJsonLine(sSnap, telCtx, sLvl, cachedRouting, sRep));
+                const RouteBTelemetrySummary curRbSummary = makeRouteBSummary(curRouteB);
+                telemetryLogger.WriteLine(FormatStageETelemetryJsonLine(
+                    sSnap, telCtx, sLvl, cachedRouting, sRep, &curRbSummary));
                 forceUiPublish = true;
             } else if (item.type == CaptureQueueItem::Type::Packet) {
                 const int16_t* ptr = item.stereo48kLR.empty() ? nullptr : item.stereo48kLR.data();
-                levelMeter.IngestStereoInt16(item.nowQpc100ns, ptr, item.outFrames48k, item.silentFlag);
+                const bool effectiveSilent = item.silentFlag || curRouteB.audioGateMuted;
+                levelMeter.IngestStereoInt16(item.nowQpc100ns, ptr, item.outFrames48k, effectiveSilent);
+
+                bool pktAudible = false;
+                if (!effectiveSilent && ptr != nullptr && item.outFrames48k > 0u) {
+                    const size_t totalSamples = std::min<size_t>(
+                        static_cast<size_t>(item.outFrames48k) * 2u,
+                        item.stereo48kLR.size());
+                    for (size_t si = 0u; si < totalSamples; ++si) {
+                        const int32_t v = ptr[si];
+                        if (v > 4 || v < -4) {
+                            pktAudible = true;
+                            break;
+                        }
+                    }
+                }
 
                 staged::TimelinePacketInput pkt;
                 pkt.sourceFrames = item.sourceFrames;
@@ -1694,10 +1809,21 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
                 pkt.devPos = item.devPos;
                 pkt.qpcPos100ns = item.qpcPos100ns;
                 pkt.nowQpc100ns = item.nowQpc100ns;
-                pkt.silentFlag = item.silentFlag;
+                pkt.silentFlag = effectiveSilent;
                 pkt.discontinuityFlag = item.discontinuityFlag;
                 pkt.timestampErrorFlag = item.timestampErrorFlag;
+                const uint64_t beforeCommit = stagec::AtomicLoadU64(&hdr->write_commit_frame);
                 bridge.IngestPacket(pkt);
+                const uint64_t afterCommit = stagec::AtomicLoadU64(&hdr->write_commit_frame);
+                if (pktAudible) {
+                    if (!prevPacketAudible) {
+                        runFirstAudibleCommitFrame = beforeCommit;
+                    }
+                    lastAudibleCommitFrame = afterCommit;
+                    prevPacketAudible = true;
+                } else {
+                    prevPacketAudible = false;
+                }
             } else if (item.type == CaptureQueueItem::Type::StreamEnded) {
                 bridge.OnStreamEnded();
                 captureStreamActive = false;
@@ -1719,7 +1845,9 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
                 const staged::TimelineStatsSnapshot eSnap = bridge.Snapshot();
                 const PcmLevelSnapshot eLvl = levelMeter.Snapshot(ev100ns);
                 const BridgeDiagnosticReport eRep = buildDiagReport(ev100ns, eLvl, eSnap, telCtx.ipc, true);
-                telemetryLogger.WriteLine(FormatStageETelemetryJsonLine(eSnap, telCtx, eLvl, cachedRouting, eRep));
+                const RouteBTelemetrySummary curRbSummary = makeRouteBSummary(curRouteB);
+                telemetryLogger.WriteLine(FormatStageETelemetryJsonLine(
+                    eSnap, telCtx, eLvl, cachedRouting, eRep, &curRbSummary));
                 forceUiPublish = true;
             }
         }
@@ -1731,6 +1859,26 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
 
         bridge.Tick(now100ns);
         const PcmLevelSnapshot curLevel = levelMeter.Snapshot(now100ns);
+
+        curRouteB = routeBCoordinator.Tick(
+            nowQpcLi.QuadPart,
+            static_cast<int64_t>(qpcFreq),
+            (curSourceCfg.mode == AudioSourceMode::AppleMusicPreset),
+            radioModeBridgeEnabled_.load(std::memory_order_acquire),
+            stagec::AtomicLoadU64(&hdr->write_commit_frame),
+            ctrlBlock,
+            lastAudibleCommitFrame,
+            runFirstAudibleCommitFrame);
+        const bool routeBEdge =
+            (curRouteB.state != prevRouteBState) ||
+            (curRouteB.gameOnline != prevRouteBGameOnline) ||
+            (curRouteB.smtcPlaybackStatus != prevRouteBSmtcStatus);
+        if (routeBEdge) {
+            prevRouteBState = curRouteB.state;
+            prevRouteBGameOnline = curRouteB.gameOnline;
+            prevRouteBSmtcStatus = curRouteB.smtcPlaybackStatus;
+            forceUiPublish = true;
+        }
 
         stagec::AtomicStoreI64(&hdr->last_heartbeat_qpc, nowQpcLi.QuadPart);
         stagec::AtomicAddU64(&hdr->producer_tick_count, 1ULL);
@@ -1749,7 +1897,8 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
             (snap.timestampFallbackAnchors != prevFallback) ||
             (snap.streamRestartCount != prevRestart);
 
-        if (timelineEdge || diagStateChanged) {
+        const RouteBTelemetrySummary curRbSummary = makeRouteBSummary(curRouteB);
+        if (timelineEdge || diagStateChanged || routeBEdge) {
             prevDiscont = snap.discontinuityCount;
             prevTsErr = snap.timestampErrorCount;
             prevFallback = snap.timestampFallbackAnchors;
@@ -1761,7 +1910,8 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
             telCtx.nowQpc100ns = now100ns;
             telCtx.ipc = ipcCounters;
             telCtx.kind = "event";
-            telemetryLogger.WriteLine(FormatStageETelemetryJsonLine(snap, telCtx, curLevel, cachedRouting, diagRep));
+            telemetryLogger.WriteLine(FormatStageETelemetryJsonLine(
+                snap, telCtx, curLevel, cachedRouting, diagRep, &curRbSummary));
             forceUiPublish = true;
         }
 
@@ -1769,7 +1919,8 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
             telCtx.nowQpc100ns = now100ns;
             telCtx.ipc = ipcCounters;
             telCtx.kind = "periodic";
-            telemetryLogger.WriteLine(FormatStageETelemetryJsonLine(snap, telCtx, curLevel, cachedRouting, diagRep));
+            telemetryLogger.WriteLine(FormatStageETelemetryJsonLine(
+                snap, telCtx, curLevel, cachedRouting, diagRep, &curRbSummary));
             while (nextTelemetryQpc100ns <= now100ns) {
                 nextTelemetryQpc100ns += telemetryInterval100ns;
             }
@@ -1779,7 +1930,7 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
             const double uptimeSec =
                 static_cast<double>(nowQpcLi.QuadPart - startQpcLi.QuadPart) /
                 static_cast<double>(qpcFreq);
-            publishSnapshot(uptimeSec, true, snap, ipcCounters, curLevel, diagRep);
+            publishSnapshot(uptimeSec, true, snap, ipcCounters, curLevel, curRouteB, diagRep);
             nextUiPublishQpc100ns = now100ns + 330000ULL; // ~33 ms (30 Hz max snapshot refresh)
         }
 
@@ -1833,7 +1984,8 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
             telCtx.formatLabelUtf8 = item.formatLabelUtf8;
         } else if (item.type == CaptureQueueItem::Type::Packet) {
             const int16_t* ptr = item.stereo48kLR.empty() ? nullptr : item.stereo48kLR.data();
-            levelMeter.IngestStereoInt16(item.nowQpc100ns, ptr, item.outFrames48k, item.silentFlag);
+            const bool effectiveSilent = item.silentFlag || curRouteB.audioGateMuted;
+            levelMeter.IngestStereoInt16(item.nowQpc100ns, ptr, item.outFrames48k, effectiveSilent);
 
             staged::TimelinePacketInput pkt;
             pkt.sourceFrames = item.sourceFrames;
@@ -1842,13 +1994,18 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
             pkt.devPos = item.devPos;
             pkt.qpcPos100ns = item.qpcPos100ns;
             pkt.nowQpc100ns = item.nowQpc100ns;
-            pkt.silentFlag = item.silentFlag;
+            pkt.silentFlag = effectiveSilent;
             pkt.discontinuityFlag = item.discontinuityFlag;
             pkt.timestampErrorFlag = item.timestampErrorFlag;
             bridge.IngestPacket(pkt);
         } else if (item.type == CaptureQueueItem::Type::StreamEnded) {
             bridge.OnStreamEnded();
         }
+    }
+
+    routeBCoordinator.ResetAndReleaseHolds(ctrlBlock);
+    if (smtcTransport) {
+        smtcTransport->Stop();
     }
 
     captureStreamActive = false;
@@ -1879,12 +2036,16 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
 
     const BridgeDiagnosticReport stoppedRep = buildDiagReport(end100ns, finalLevel, finalSnap, finalIpc, false);
 
+    routeb::RouteBCoordinatorStatus stoppedRouteB{};
+    stoppedRouteB.bridgeEnabled = radioModeBridgeEnabled_.load(std::memory_order_acquire);
+    const RouteBTelemetrySummary stoppedRbSummary = makeRouteBSummary(stoppedRouteB);
+
     telCtx.nowQpc100ns = end100ns;
     telCtx.ipc = finalIpc;
     telCtx.kind = "shutdown_flush";
     // allowPartSplit = false guarantees shutdown_flush stays at the tail of the active session log part
     telemetryLogger.WriteLine(
-        FormatStageETelemetryJsonLine(finalSnap, telCtx, finalLevel, cachedRouting, stoppedRep),
+        FormatStageETelemetryJsonLine(finalSnap, telCtx, finalLevel, cachedRouting, stoppedRep, &stoppedRbSummary),
         false);
 
     const std::wstring finalLogPath = telemetryLogger.ActiveFilePath();
@@ -1914,12 +2075,20 @@ void StageEBridgeEngine::TimelineCommitThreadMain(StageEEngineOptions opts, HAND
         snapshot_.ipc = finalIpc;
         snapshot_.level = finalLevel;
         snapshot_.routing = cachedRouting;
+        snapshot_.routeB = stoppedRouteB;
         snapshot_.report = stoppedRep;
         lastDiagInput_ = latestBuiltInput;
         lastDiagTracker_ = statusTracker;
     }
 
     running_.store(false, std::memory_order_release);
+
+    if (ctrlView != nullptr) {
+        UnmapViewOfFile(ctrlView);
+        ctrlView = nullptr;
+    }
+    ctrlBlock = nullptr;
+    hCtrlMapping.Reset();
 
     UnmapViewOfFile(view);
     hMapping.Reset();
