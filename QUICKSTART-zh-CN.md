@@ -1,4 +1,4 @@
-# Independence FM 安装与使用指南（v0.4.0-beta.1）
+# Independence FM 安装与使用指南（v0.4.1-beta.1）
 
 ## 1. 全新安装或从旧版升级
 1. 先正常运行 GTA IV 一次并退出；将压缩包完整解压至可写文件夹。

@@ -1,4 +1,4 @@
-# Independence FM — Quick Start (`v0.4.0-beta.1`)
+# Independence FM — Quick Start (`v0.4.1-beta.1`)
 
 ## 1. Install or Upgrade
 1. Launch GTA IV normally once, then exit it. Extract the full ZIP to a writable folder.

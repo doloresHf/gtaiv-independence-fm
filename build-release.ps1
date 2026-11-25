@@ -2,7 +2,7 @@ param(
     [string]$CMake = 'cmake',
     [string]$Python = 'python',
     [string]$OutputDirectory,
-    [string]$Version = 'v0.4.0-beta.1'
+    [string]$Version = 'v0.4.1-beta.1'
 )
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot

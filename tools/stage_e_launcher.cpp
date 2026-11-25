@@ -2595,7 +2595,7 @@ private:
         std::wstring text;
         if (en) {
             text =
-                L"GTA IV Independence FM — Audio Bridge (v0.4.0-beta.1)\n\n"
+                L"GTA IV Independence FM — Audio Bridge (v0.4.1-beta.1)\n\n"
                 L"Active Audio Source:\n  " + curSrcW + L"\n\n"
                 L"Architecture:\n"
                 L"  • x64 WASAPI Per-Process Tree Loopback (48 kHz / 2ch / 16-bit PCM)\n"
@@ -2606,7 +2606,7 @@ private:
                 L"Session Log Directory:\n  " + logDir;
         } else {
             text =
-                L"GTA IV Independence FM — Audio Bridge (v0.4.0-beta.1)\n\n"
+                L"GTA IV Independence FM — Audio Bridge (v0.4.1-beta.1)\n\n"
                 L"当前捕获音源：\n  " + curSrcW + L"\n\n"
                 L"管线架构：\n"
                 L"  • x64 WASAPI 按进程树隔离环回捕获 (48 kHz / 2ch / 16-bit PCM)\n"
@@ -3341,7 +3341,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     if (opts.showHelp) {
         const bool en = (stagee::ResolveEffectiveLanguage(opts.engine.language) == stagee::UiLanguage::EnUs);
         const wchar_t* helpTextZh =
-            L"GTA IV Independence FM — Audio Bridge (v0.4.0-beta.1)\n\n"
+            L"GTA IV Independence FM — Audio Bridge (v0.4.1-beta.1)\n\n"
             L"日常使用：直接双击 iv_apple_music_radio.exe 即可自动发现配置的发声程序并驻留系统托盘。\n"
             L"界面顶部菜单栏『选项 -> 设置』支持零硬件静音隔离、电台模式联动开关、切换语言（中/英）以及选择兼容的 Windows 音频应用 (Stream Anything)。\n\n"
             L"可选命令行参数：\n"
@@ -3361,7 +3361,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             L"  --telemetry-jsonl <path>  固定写入单个遥测文件路径\n"
             L"  --headless                无界面后台运行模式（供自动化测试与脚本调用）";
         const wchar_t* helpTextEn =
-            L"GTA IV Independence FM — Audio Bridge (v0.4.0-beta.1)\n\n"
+            L"GTA IV Independence FM — Audio Bridge (v0.4.1-beta.1)\n\n"
             L"Daily Usage: Double-click iv_apple_music_radio.exe to auto-discover your configured audio app and stay in the system tray.\n"
             L"Use 'Options -> Settings' to manage zero-hardware silent isolation, Radio Mode sync, language, or compatible Windows audio apps (Stream Anything).\n\n"
             L"Optional CLI Flags:\n"
