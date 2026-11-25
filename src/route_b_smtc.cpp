@@ -61,6 +61,7 @@ enum class SmtcCmd : uint8_t {
     SkipNext = 2,
     SkipPrev = 3,
     PauseAndRewindToStart = 4,
+    PauseAndRestartTrack = 5,
 };
 
 } // namespace
@@ -130,6 +131,7 @@ public:
     void RequestPlay() override        { EnqueueCmd(SmtcCmd::Play); }
     void RequestPause() override       { EnqueueCmd(SmtcCmd::Pause); }
     void RequestPauseAndRewindToStart() override { EnqueueCmd(SmtcCmd::PauseAndRewindToStart); }
+    void RequestPauseAndRestartTrack() override { EnqueueCmd(SmtcCmd::PauseAndRestartTrack); }
     void RequestSkipNext() override    { EnqueueCmd(SmtcCmd::SkipNext); }
     void RequestSkipPrevious() override{ EnqueueCmd(SmtcCmd::SkipPrev); }
 
@@ -240,6 +242,7 @@ private:
         int64_t prevRawPosMs = 0LL;
         int64_t prevDurMs = 0LL;
         int64_t lastTrackEndQpc = 0;
+        int64_t lastTrackChangeQpc = 0;
 
         auto bindManagerIfNeeded = [&]() {
             if (mgr) {
@@ -283,6 +286,7 @@ private:
                 prevStatus = kSmtcStatusClosed;
                 prevRawPosMs = 0LL;
                 prevDurMs = 0LL;
+                lastTrackChangeQpc = 0;
 
                 if (found) {
                     session = found;
@@ -365,6 +369,7 @@ private:
                 if (!curTitle.empty()) {
                     if (hasPrevMedia && (curTitle != prevTitle || curArtist != prevArtist)) {
                         trackChanged = true;
+                        lastTrackChangeQpc = nowQpc;
                         if (prevStatus == kSmtcStatusPlaying || curStatus == kSmtcStatusPlaying) {
                             naturalTrackEnd = true;
                         }
@@ -447,14 +452,62 @@ private:
                         } catch (...) {
                         }
                         break;
-                    case SmtcCmd::SkipNext:
+                    case SmtcCmd::PauseAndRestartTrack: {
+                        LARGE_INTEGER nowLi{};
+                        QueryPerformanceCounter(&nowLi);
+                        const int64_t nowQpc = nowLi.QuadPart;
+                        auto pb = session.GetPlaybackInfo();
+                        auto tl = session.GetTimelineProperties();
+                        const int64_t rawPosMs = tl.Position().count() / 10000LL;
+                        if (pb && pb.Controls().IsPlaybackPositionEnabled()) {
+                            session.TryPauseAsync().get();
+                            try {
+                                session.TryChangePlaybackPositionAsync(0LL).get();
+                            } catch (...) {
+                            }
+                            prevRawPosMs = 0LL;
+                            break;
+                        }
+                        const bool canSkipPrev = (pb && pb.Controls().IsPreviousEnabled());
+                        const bool trackStable = (lastTrackChangeQpc == 0) ||
+                            (QpcDeltaToMillis(nowQpc - lastTrackChangeQpc, qpcFreq_.QuadPart) >= 4000LL);
+                        if (canSkipPrev && trackStable && rawPosMs >= 5000LL) {
+                            session.TrySkipPreviousAsync().get();
+                            for (int i = 0; i < 6; ++i) {
+                                if (stopRequested_.load(std::memory_order_acquire)) {
+                                    break;
+                                }
+                                Sleep(25u);
+                                try {
+                                    const auto tlNow = session.GetTimelineProperties();
+                                    const int64_t posNowMs = tlNow.Position().count() / 10000LL;
+                                    if (posNowMs <= 2500LL) {
+                                        break;
+                                    }
+                                } catch (...) {
+                                }
+                            }
+                            prevRawPosMs = 0LL;
+                        }
+                        session.TryPauseAsync().get();
+                        break;
+                    }
+                    case SmtcCmd::SkipNext: {
                         session.TrySkipNextAsync().get();
+                        LARGE_INTEGER nowLi{};
+                        QueryPerformanceCounter(&nowLi);
+                        lastTrackChangeQpc = nowLi.QuadPart;
                         mediaDirty_.store(true, std::memory_order_release);
                         break;
-                    case SmtcCmd::SkipPrev:
+                    }
+                    case SmtcCmd::SkipPrev: {
                         session.TrySkipPreviousAsync().get();
+                        LARGE_INTEGER nowLi{};
+                        QueryPerformanceCounter(&nowLi);
+                        lastTrackChangeQpc = nowLi.QuadPart;
                         mediaDirty_.store(true, std::memory_order_release);
                         break;
+                    }
                     }
                 } catch (...) {
                     sessionsDirty_.store(true, std::memory_order_release);

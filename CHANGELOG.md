@@ -17,6 +17,10 @@ All notable changes to this project are documented in this file.
 - **Upgraded `Setup.exe` Receipt (`v1`/`v2` → `IndependenceFM-v3`)**: Automatically retires `IVRadioProbe.{asi,ini}` and installs `IVRadioBridge.{asi,ini}` during transactional in-place upgrades from `v0.2.0-beta.1` and `v0.3.0-beta.1`, guards fresh installs against unmanaged `IVRadioProbe.asi`, and expands `Setup.exe --selftest`.
 - Updated `README.md`, `QUICKSTART.md`, and `QUICKSTART-zh-CN.md` for `v0.4.0-beta.1` Radio Mode usage and upgrades.
 
+### Fixed
+- **Clean `0:00` Restart When Tuning In Mid-DJ**: Entering DJ/commercial/news breaks (`PausedForDj`) mid-song—such as tuning back into Independence FM partway through a track or encountering consecutive DJ segments—now resets Apple Music cleanly back to `0:00` via guarded `RequestPauseAndRestartTrack()` (using `TrySkipPreviousAsync()` past Apple Music's `Seek=0` SMTC profile when safe) and holds a `300 ms` settle window (`djPauseSettleMs`) before pre-rolling the incoming track.
+- **ESC Single-Frame Glitch Debounce & SMTC Play/Pause Watchdogs**: Added a `100 ms` assertion debounce (`escPauseDebounceMs`) to filter GTA IV `17–21 ms` world/clock-transition pause glitches (while keeping `ESC` resume instantaneous at `0 ms`), plus bounded SMTC Play/Pause confirmation watchdogs (`TickSmtcVerify`) with ESC/DJ re-entry ownership transfer so Apple Music never remains stuck paused after leaving the pause menu (including off-station playback).
+
 ## [v0.3.0-beta.1] - Unreleased
 
 ### Added

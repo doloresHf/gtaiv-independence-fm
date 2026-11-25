@@ -54,14 +54,17 @@ void RouteBCoordinator::ResetAndReleaseHolds(RadioBridgeCtrlBlock* ctrl) {
     escSpliceSeq_            = 0u;
     escSpliceStartFrame_     = 0ULL;
     escSpliceEndFrame_       = 0ULL;
+    escRawStartQpc_          = 0;
     escPauseStartQpc_        = 0;
     escPauseGapStartFrame_   = 0ULL;
     escResumeAwaitingAudio_  = false;
     escResumeStartQpc_       = 0;
     escResumeFloorFrame_     = 0ULL;
+    djPauseStartQpc_         = 0;
     prerollAwaitingAudio_    = false;
     prerollFloorFrame_       = 0ULL;
     skipFloorFrame_          = 0ULL;
+    ClearSmtcVerify();
 
     if (ctrl && AtomicLoad32(&ctrl->magic) == kCtrlMagic && AtomicLoad32(&ctrl->total_bytes) >= kCtrlBytes) {
         AtomicStore32(&ctrl->bridge_enabled, 0u);
@@ -160,45 +163,57 @@ RouteBCoordinatorStatus RouteBCoordinator::Tick(int64_t nowQpc,
         skipInProgress_         = false;
         backToBackPending_      = false;
         escResumeAwaitingAudio_ = false;
+        escRawStartQpc_         = 0;
+        djPauseStartQpc_        = 0;
+        ClearSmtcVerify();
     } else {
         if (!eligibleBaselineSynced_) {
             lastHandledEndSeq_      = smtc.naturalTrackEndSeq;
             lastHandledSkipSeq_     = pendingSkipSeq;
             eligibleBaselineSynced_ = true;
             if (escPaused) {
-                preEscState_ = (stationTuned && djSlotOrCrossfade)
-                    ? BridgeState::PausedForDj
-                    : BridgeState::PlayingSong;
-                if (smtc.connected && smtc.playbackStatus == kSmtcStatusPlaying) {
-                    smtc_.RequestPause();
-                    pausedByUsForEsc_ = true;
-                    escPauseStartQpc_ = nowQpc;
-                    escPauseGapStartFrame_ =
-                        (lastAudibleCommitFrame > 0ULL && lastAudibleCommitFrame <= ringCommitFrame)
-                        ? lastAudibleCommitFrame
-                        : ringCommitFrame;
-                    escResumeAwaitingAudio_ = false;
-                }
-                state_ = BridgeState::PausedForEsc;
+                state_ = BridgeState::PlayingSong;
             } else if (stationTuned && djSlotOrCrossfade) {
                 state_ = BridgeState::PausedForDj;
                 audioGateMuted_ = true;
                 if (smtc.connected && smtc.playbackStatus == kSmtcStatusPlaying) {
-                    smtc_.RequestPause();
+                    smtc_.RequestPauseAndRestartTrack();
                     pausedByUsForDj_ = true;
+                    djPauseStartQpc_ = nowQpc;
+                    ArmPauseVerify(nowQpc);
                 }
             } else {
                 state_ = BridgeState::PlayingSong;
             }
         }
 
-        // Priority 1: ESC pause menu handling
+        // Priority 1: ESC pause menu handling (assert debounced >= 100ms, de-assert instant)
+        bool escConfirmed = false;
         if (escPaused) {
+            if (state_ == BridgeState::PausedForEsc) {
+                escConfirmed = true;
+            } else {
+                if (escRawStartQpc_ == 0) {
+                    escRawStartQpc_ = nowQpc;
+                }
+                escConfirmed = (QpcDeltaToMs(nowQpc - escRawStartQpc_, qpcFreq) >=
+                                static_cast<int64_t>(cfg_.escPauseDebounceMs));
+            }
+        } else {
+            escRawStartQpc_ = 0;
+        }
+
+        if (escConfirmed) {
             if (state_ != BridgeState::PausedForEsc) {
                 preEscState_ = state_;
-                if (!pausedByUsForDj_ && smtc.connected && smtc.playbackStatus == kSmtcStatusPlaying) {
-                    smtc_.RequestPause();
+                const bool shouldOwnEscPause = !pausedByUsForDj_ && smtc.connected &&
+                    (smtc.playbackStatus == kSmtcStatusPlaying || playVerifyPending_);
+                if (shouldOwnEscPause) {
+                    if (smtc.playbackStatus == kSmtcStatusPlaying) {
+                        smtc_.RequestPause();
+                    }
                     pausedByUsForEsc_ = true;
+                    ArmPauseVerify(nowQpc);
                     escPauseStartQpc_ = nowQpc;
                     escPauseGapStartFrame_ =
                         (lastAudibleCommitFrame > 0ULL && lastAudibleCommitFrame <= ringCommitFrame)
@@ -219,6 +234,7 @@ RouteBCoordinatorStatus RouteBCoordinator::Tick(int64_t nowQpc,
                 if (pausedByUsForEsc_) {
                     if (!pausedByUsForDj_ && smtc.connected) {
                         smtc_.RequestPlay();
+                        ArmPlayVerify(nowQpc);
                         escResumeAwaitingAudio_ = true;
                         escResumeStartQpc_      = nowQpc;
                         escResumeFloorFrame_    = ringCommitFrame;
@@ -256,9 +272,11 @@ RouteBCoordinatorStatus RouteBCoordinator::Tick(int64_t nowQpc,
                 if (pausedByUsForDj_) {
                     if (smtc.connected) {
                         smtc_.RequestPlay();
+                        ArmPlayVerify(nowQpc);
                     }
                     pausedByUsForDj_ = false;
                 }
+                djPauseStartQpc_      = 0;
                 audioGateMuted_       = false;
                 prerollActive_        = false;
                 prerollAwaitingAudio_ = false;
@@ -326,26 +344,16 @@ RouteBCoordinatorStatus RouteBCoordinator::Tick(int64_t nowQpc,
                             prerollAwaitingAudio_   = false;
                             backToBackPending_      = false;
                             escResumeAwaitingAudio_ = false;
-                            if (!pausedByUsForDj_ && smtc.connected && smtc.playbackStatus == kSmtcStatusPlaying) {
-                                smtc_.RequestPause();
+                            const bool shouldOwnDjPause = !pausedByUsForDj_ && smtc.connected &&
+                                (smtc.playbackStatus == kSmtcStatusPlaying || playVerifyPending_);
+                            if (shouldOwnDjPause) {
+                                smtc_.RequestPauseAndRestartTrack();
                                 pausedByUsForDj_ = true;
+                                djPauseStartQpc_ = nowQpc;
+                                ArmPauseVerify(nowQpc);
                             }
                             lastHandledEndSeq_ = smtc.naturalTrackEndSeq;
                             state_ = BridgeState::PausedForDj;
-                            if (actActive && !actIsUser && hasValidDjDur &&
-                                stbyActive && stbyIsUser && stbyPreloadReady &&
-                                djRemainingMs <= static_cast<int32_t>(cfg_.prerollLeadMs)) {
-                                prerollFloorFrame_    = ringCommitFrame;
-                                prerollStartFrame_    = ringCommitFrame;
-                                prerollAwaitingAudio_ = true;
-                                prerollActive_        = true;
-                                audioGateMuted_       = false;
-                                if (pausedByUsForDj_ && smtc.connected) {
-                                    smtc_.RequestPlay();
-                                }
-                                pausedByUsForDj_ = false;
-                                state_           = BridgeState::PreRollingForDj;
-                            }
                         } else if (smtc.naturalTrackEndSeq != lastHandledEndSeq_) {
                             lastHandledEndSeq_ = smtc.naturalTrackEndSeq;
                             const bool suppressed = (skipSuppressUntilQpc_ > 0 && nowQpc < skipSuppressUntilQpc_);
@@ -375,6 +383,8 @@ RouteBCoordinatorStatus RouteBCoordinator::Tick(int64_t nowQpc,
                                     if (smtc.connected) {
                                         smtc_.RequestPauseAndRewindToStart();
                                         pausedByUsForDj_ = true;
+                                        djPauseStartQpc_ = nowQpc;
+                                        ArmPauseVerify(nowQpc);
                                     }
                                     drainStartQpc_         = nowQpc;
                                     drainStartSlotSeq_     = slotTransSeq;
@@ -396,16 +406,20 @@ RouteBCoordinatorStatus RouteBCoordinator::Tick(int64_t nowQpc,
                             audioGateMuted_ = false;
                             if (pausedByUsForDj_ && smtc.connected) {
                                 smtc_.RequestPlay();
+                                ArmPlayVerify(nowQpc);
                             }
                             pausedByUsForDj_ = false;
+                            djPauseStartQpc_ = 0;
                             state_           = BridgeState::PlayingSong;
                         } else if (QpcDeltaToMs(nowQpc - drainStartQpc_, qpcFreq) >=
                                    static_cast<int64_t>(cfg_.drainTimeoutMs)) {
                             audioGateMuted_ = false;
                             if (pausedByUsForDj_ && smtc.connected) {
                                 smtc_.RequestPlay();
+                                ArmPlayVerify(nowQpc);
                             }
                             pausedByUsForDj_ = false;
+                            djPauseStartQpc_ = 0;
                             state_           = BridgeState::PlayingSong;
                         }
                         break;
@@ -420,22 +434,31 @@ RouteBCoordinatorStatus RouteBCoordinator::Tick(int64_t nowQpc,
                             prerollAwaitingAudio_ = false;
                             if (pausedByUsForDj_ && smtc.connected) {
                                 smtc_.RequestPlay();
+                                ArmPlayVerify(nowQpc);
                             }
                             pausedByUsForDj_ = false;
+                            djPauseStartQpc_ = 0;
                             state_           = BridgeState::PlayingSong;
-                        } else if (actActive && !actIsUser && hasValidDjDur &&
-                                   stbyActive && stbyIsUser && stbyPreloadReady &&
-                                   djRemainingMs <= static_cast<int32_t>(cfg_.prerollLeadMs)) {
-                            prerollFloorFrame_    = ringCommitFrame;
-                            prerollStartFrame_    = ringCommitFrame;
-                            prerollAwaitingAudio_ = true;
-                            prerollActive_        = true;
-                            audioGateMuted_       = false;
-                            if (pausedByUsForDj_ && smtc.connected) {
-                                smtc_.RequestPlay();
+                        } else {
+                            const bool djPauseSettled = !pausedByUsForDj_ || (djPauseStartQpc_ == 0) ||
+                                (QpcDeltaToMs(nowQpc - djPauseStartQpc_, qpcFreq) >=
+                                 static_cast<int64_t>(cfg_.djPauseSettleMs));
+                            if (actActive && !actIsUser && hasValidDjDur && djPauseSettled &&
+                                stbyActive && stbyIsUser && stbyPreloadReady &&
+                                djRemainingMs <= static_cast<int32_t>(cfg_.prerollLeadMs)) {
+                                prerollFloorFrame_    = ringCommitFrame;
+                                prerollStartFrame_    = ringCommitFrame;
+                                prerollAwaitingAudio_ = true;
+                                prerollActive_        = true;
+                                audioGateMuted_       = false;
+                                if (pausedByUsForDj_ && smtc.connected) {
+                                    smtc_.RequestPlay();
+                                    ArmPlayVerify(nowQpc);
+                                }
+                                pausedByUsForDj_ = false;
+                                djPauseStartQpc_ = 0;
+                                state_           = BridgeState::PreRollingForDj;
                             }
-                            pausedByUsForDj_ = false;
-                            state_           = BridgeState::PreRollingForDj;
                         }
                         break;
                     }
@@ -459,9 +482,13 @@ RouteBCoordinatorStatus RouteBCoordinator::Tick(int64_t nowQpc,
                             prerollActive_        = false;
                             prerollAwaitingAudio_ = false;
                             audioGateMuted_       = true;
-                            if (!pausedByUsForDj_ && smtc.connected && smtc.playbackStatus == kSmtcStatusPlaying) {
-                                smtc_.RequestPause();
+                            const bool shouldOwnDjPause = !pausedByUsForDj_ && smtc.connected &&
+                                (smtc.playbackStatus == kSmtcStatusPlaying || playVerifyPending_);
+                            if (shouldOwnDjPause) {
+                                smtc_.RequestPauseAndRestartTrack();
                                 pausedByUsForDj_ = true;
+                                djPauseStartQpc_ = nowQpc;
+                                ArmPauseVerify(nowQpc);
                             }
                             state_ = BridgeState::PausedForDj;
                         }
@@ -475,6 +502,8 @@ RouteBCoordinatorStatus RouteBCoordinator::Tick(int64_t nowQpc,
                 }
             }
         }
+
+        TickSmtcVerify(nowQpc, qpcFreq, smtc);
     }
 
     PublishHostFieldsToCtrl(nowQpc, bridgeEnabledSetting, smtc, ctrl);
@@ -523,6 +552,106 @@ void RouteBCoordinator::PublishHostFieldsToCtrl(int64_t nowQpc,
     AtomicStoreU64(&ctrl->esc_splice_start_frame, escSpliceStartFrame_);
     AtomicStoreU64(&ctrl->esc_splice_end_frame, escSpliceEndFrame_);
     AtomicStoreI64(&ctrl->host_heartbeat_qpc, nowQpc);
+}
+
+void RouteBCoordinator::ArmPlayVerify(int64_t nowQpc) noexcept {
+    pauseVerifyPending_        = false;
+    pauseVerifyStartQpc_       = 0;
+    pauseVerifyLastAttemptQpc_ = 0;
+    pauseVerifyStableSinceQpc_ = 0;
+    pauseVerifyRetries_        = 0u;
+
+    playVerifyPending_        = true;
+    playVerifyStartQpc_       = nowQpc;
+    playVerifyLastAttemptQpc_ = nowQpc;
+    playVerifyStableSinceQpc_ = 0;
+    playVerifyRetries_        = 0u;
+}
+
+void RouteBCoordinator::ArmPauseVerify(int64_t nowQpc) noexcept {
+    playVerifyPending_        = false;
+    playVerifyStartQpc_       = 0;
+    playVerifyLastAttemptQpc_ = 0;
+    playVerifyStableSinceQpc_ = 0;
+    playVerifyRetries_        = 0u;
+
+    pauseVerifyPending_        = true;
+    pauseVerifyStartQpc_       = nowQpc;
+    pauseVerifyLastAttemptQpc_ = nowQpc;
+    pauseVerifyStableSinceQpc_ = 0;
+    pauseVerifyRetries_        = 0u;
+}
+
+void RouteBCoordinator::ClearSmtcVerify() noexcept {
+    playVerifyPending_         = false;
+    playVerifyStartQpc_        = 0;
+    playVerifyLastAttemptQpc_  = 0;
+    playVerifyStableSinceQpc_  = 0;
+    playVerifyRetries_         = 0u;
+    pauseVerifyPending_        = false;
+    pauseVerifyStartQpc_       = 0;
+    pauseVerifyLastAttemptQpc_ = 0;
+    pauseVerifyStableSinceQpc_ = 0;
+    pauseVerifyRetries_        = 0u;
+}
+
+void RouteBCoordinator::TickSmtcVerify(int64_t nowQpc, int64_t qpcFreq, const SmtcSnapshot& smtc) {
+    if (playVerifyPending_) {
+        const bool validState =
+            (state_ == BridgeState::PlayingSong ||
+             state_ == BridgeState::PreRollingForDj ||
+             state_ == BridgeState::SkippingTrack) &&
+            !pausedByUsForEsc_ &&
+            !pausedByUsForDj_;
+        if (!validState ||
+            QpcDeltaToMs(nowQpc - playVerifyStartQpc_, qpcFreq) >= static_cast<int64_t>(cfg_.smtcVerifyTimeoutMs)) {
+            playVerifyPending_ = false;
+        } else if (smtc.connected && smtc.playbackStatus == kSmtcStatusPlaying) {
+            if (playVerifyStableSinceQpc_ == 0) {
+                playVerifyStableSinceQpc_ = nowQpc;
+            } else if (QpcDeltaToMs(nowQpc - playVerifyStableSinceQpc_, qpcFreq) >=
+                       static_cast<int64_t>(cfg_.smtcVerifySettleMs)) {
+                playVerifyPending_ = false;
+            }
+        } else if (smtc.connected) {
+            playVerifyStableSinceQpc_ = 0;
+            if (playVerifyRetries_ < cfg_.smtcVerifyMaxRetries &&
+                QpcDeltaToMs(nowQpc - playVerifyLastAttemptQpc_, qpcFreq) >=
+                    static_cast<int64_t>(cfg_.playVerifyRetryMs)) {
+                smtc_.RequestPlay();
+                playVerifyLastAttemptQpc_ = nowQpc;
+                ++playVerifyRetries_;
+            }
+        }
+    }
+
+    if (pauseVerifyPending_) {
+        const bool validState =
+            (state_ == BridgeState::PausedForEsc ||
+             state_ == BridgeState::PausedForDj ||
+             state_ == BridgeState::DrainingSongEnd) &&
+            (pausedByUsForEsc_ || pausedByUsForDj_);
+        if (!validState ||
+            QpcDeltaToMs(nowQpc - pauseVerifyStartQpc_, qpcFreq) >= static_cast<int64_t>(cfg_.smtcVerifyTimeoutMs)) {
+            pauseVerifyPending_ = false;
+        } else if (smtc.connected && smtc.playbackStatus == kSmtcStatusPaused) {
+            if (pauseVerifyStableSinceQpc_ == 0) {
+                pauseVerifyStableSinceQpc_ = nowQpc;
+            } else if (QpcDeltaToMs(nowQpc - pauseVerifyStableSinceQpc_, qpcFreq) >=
+                       static_cast<int64_t>(cfg_.smtcVerifySettleMs)) {
+                pauseVerifyPending_ = false;
+            }
+        } else if (smtc.connected) {
+            pauseVerifyStableSinceQpc_ = 0;
+            if (pauseVerifyRetries_ < cfg_.smtcVerifyMaxRetries &&
+                QpcDeltaToMs(nowQpc - pauseVerifyLastAttemptQpc_, qpcFreq) >=
+                    static_cast<int64_t>(cfg_.pauseVerifyRetryMs)) {
+                smtc_.RequestPause();
+                pauseVerifyLastAttemptQpc_ = nowQpc;
+                ++pauseVerifyRetries_;
+            }
+        }
+    }
 }
 
 } // namespace routeb

@@ -844,15 +844,21 @@ public:
         ++pauseCount;
         snap.playbackStatus = routeb::kSmtcStatusPaused;
     }
+    void RequestPauseAndRestartTrack() override {
+        ++pauseRestartCount;
+        ++pauseCount;
+        snap.playbackStatus = routeb::kSmtcStatusPaused;
+    }
     void RequestSkipNext() override     { ++nextCount; }
     void RequestSkipPrevious() override { ++prevCount; }
 
     routeb::SmtcSnapshot snap{};
-    uint32_t playCount        = 0u;
-    uint32_t pauseCount       = 0u;
-    uint32_t pauseRewindCount = 0u;
-    uint32_t nextCount        = 0u;
-    uint32_t prevCount        = 0u;
+    uint32_t playCount         = 0u;
+    uint32_t pauseCount        = 0u;
+    uint32_t pauseRewindCount  = 0u;
+    uint32_t pauseRestartCount = 0u;
+    uint32_t nextCount         = 0u;
+    uint32_t prevCount         = 0u;
 };
 
 void InitMockCtrl(routeb::RadioBridgeCtrlBlock& ctrl, int64_t nowQpc, int64_t qpcFreq) {
@@ -874,7 +880,7 @@ void InitMockCtrl(routeb::RadioBridgeCtrlBlock& ctrl, int64_t nowQpc, int64_t qp
 }
 
 void RunSuite5CoordinatorStateMachine() {
-    std::printf("[Suite 5] Coordinator State Machine (12 deterministic scenarios)\n");
+    std::printf("[Suite 5] Coordinator State Machine (16 deterministic scenarios)\n");
     constexpr int64_t kQpcFreq = 10000000LL; // 1 ms = 10,000 ticks
     constexpr int64_t kMs      = 10000LL;
 
@@ -1136,9 +1142,21 @@ void RunSuite5CoordinatorStateMachine() {
         routeb::RouteBCoordinator coord(smtc);
         coord.Tick(nowQpc, kQpcFreq, true, true, 100000ULL, &ctrl, 100000ULL, 50000ULL);
 
-        // Press ESC at commit 100,000 -> SMTC pause takes ~120ms trailing audio (lastAudible=106,000)
+        // Press ESC at commit 100,000 -> debounced for 100ms, then SMTC pause takes ~120ms trailing audio (lastAudible=106,000)
         ctrl.esc_paused = 1u;
         auto st = coord.Tick(nowQpc, kQpcFreq, true, true, 100000ULL, &ctrl, 100000ULL, 50000ULL);
+        CHECK(st.state == routeb::BridgeState::PlayingSong);
+        CHECK(smtc.pauseCount == 0u);
+
+        nowQpc += 50LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 100000ULL, &ctrl, 100000ULL, 50000ULL);
+        CHECK(st.state == routeb::BridgeState::PlayingSong);
+        CHECK(smtc.pauseCount == 0u);
+
+        nowQpc += 50LL * kMs; // +100ms total -> confirmed ESC pause
+        ctrl.game_heartbeat_qpc = nowQpc;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 100000ULL, &ctrl, 100000ULL, 50000ULL);
         CHECK(st.state == routeb::BridgeState::PausedForEsc);
         CHECK(smtc.pauseCount == 1u);
 
@@ -1165,6 +1183,11 @@ void RunSuite5CoordinatorStateMachine() {
 
         // Second ESC cycle: trailing audible updated up to +650ms (<= 800ms), resume waits at +900ms (< 1500ms)
         ctrl.esc_paused = 1u;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 315000ULL, &ctrl, 315000ULL, 312000ULL);
+        CHECK(st.state == routeb::BridgeState::PlayingSong);
+
+        nowQpc += 100LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
         st = coord.Tick(nowQpc, kQpcFreq, true, true, 315000ULL, &ctrl, 315000ULL, 312000ULL);
         CHECK(st.state == routeb::BridgeState::PausedForEsc);
         CHECK(smtc.pauseCount == 2u);
@@ -1202,6 +1225,9 @@ void RunSuite5CoordinatorStateMachine() {
         CHECK(smtc.pauseCount == 3u);
 
         ctrl.esc_paused = 1u;
+        coord.Tick(nowQpc, kQpcFreq, true, true, 540000ULL, &ctrl);
+        nowQpc += 100LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
         st = coord.Tick(nowQpc, kQpcFreq, true, true, 540000ULL, &ctrl);
         CHECK(st.state == routeb::BridgeState::PausedForEsc);
         CHECK(smtc.pauseCount == 3u); // Did not re-pause
@@ -1321,6 +1347,8 @@ void RunSuite5CoordinatorStateMachine() {
         ctrl.standby_slot_is_user = 1u;
         ctrl.standby_preloaded_ready = 1u;
         ctrl.active_slot_play_ms = 20000;
+        nowQpc += 350LL * kMs; // Satisfy 300ms DJ pause settle guard
+        ctrl.game_heartbeat_qpc = nowQpc;
         st = coord.Tick(nowQpc, kQpcFreq, true, true, 375000ULL, &ctrl);
         CHECK(st.state == routeb::BridgeState::PreRollingForDj);
 
@@ -1358,6 +1386,295 @@ void RunSuite5CoordinatorStateMachine() {
         CHECK(ctrl.preroll_active == 0u);
         CHECK(ctrl.host_heartbeat_qpc == 0LL);
         CHECK(ctrl.host_pid == 0u);
+    }
+
+    // 13. Mid-DJ tune-in calls RequestPauseAndRestartTrack + 300ms settle before PreRollingForDj;
+    //     chained DJ also calls RequestPauseAndRestartTrack; natural track end calls RequestPauseAndRewindToStart
+    {
+        int64_t nowQpc = 1000LL * kMs;
+        MockSmtcTransport smtc;
+        smtc.snap.connected = true;
+        smtc.snap.playbackStatus = routeb::kSmtcStatusPlaying;
+        routeb::RadioBridgeCtrlBlock ctrl{};
+        InitMockCtrl(ctrl, nowQpc, kQpcFreq);
+        ctrl.station_tuned = 0u;
+        ctrl.active_slot_is_user = 0u;
+        ctrl.active_slot_play_ms = 20000;
+        ctrl.active_slot_duration_ms = 25000; // djRemainingMs = 5000 <= 9000
+        ctrl.standby_slot_active = 1u;
+        ctrl.standby_slot_is_user = 1u;
+        ctrl.standby_preloaded_ready = 1u;
+
+        routeb::RouteBCoordinator coord(smtc);
+        auto st = coord.Tick(nowQpc, kQpcFreq, true, true, 100000ULL, &ctrl);
+        CHECK(st.state == routeb::BridgeState::PlayingSong);
+        CHECK(smtc.pauseRestartCount == 0u);
+
+        // Tune in mid-DJ while djRemainingMs == 5000 <= 9000 and preload is ready:
+        // Must restart+pause first and hold PausedForDj for >= 300ms settle!
+        nowQpc += 50LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        ctrl.station_tuned = 1u;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 105000ULL, &ctrl);
+        CHECK(st.state == routeb::BridgeState::PausedForDj);
+        CHECK(smtc.pauseRestartCount == 1u);
+        CHECK(smtc.pauseRewindCount == 0u);
+        CHECK(smtc.playCount == 0u);
+
+        nowQpc += 150LL * kMs; // +150ms < 300ms settle
+        ctrl.game_heartbeat_qpc = nowQpc;
+        ctrl.active_slot_play_ms = 20150;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 110000ULL, &ctrl);
+        CHECK(st.state == routeb::BridgeState::PausedForDj);
+        CHECK(smtc.playCount == 0u);
+
+        nowQpc += 150LL * kMs; // +300ms >= 300ms settle -> PreRollingForDj
+        ctrl.game_heartbeat_qpc = nowQpc;
+        ctrl.active_slot_play_ms = 20300;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 115000ULL, &ctrl);
+        CHECK(st.state == routeb::BridgeState::PreRollingForDj);
+        CHECK(smtc.playCount == 1u);
+
+        // Chained 2nd DJ queued ahead -> fallback PausedForDj uses RequestPauseAndRestartTrack
+        nowQpc += 100LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        ctrl.standby_slot_is_user = 0u;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 120000ULL, &ctrl);
+        CHECK(st.state == routeb::BridgeState::PausedForDj);
+        CHECK(smtc.pauseRestartCount == 2u);
+        CHECK(smtc.pauseRewindCount == 0u);
+
+        // Finish DJ -> back to user track -> PlayingSong, then natural track end calls RequestPauseAndRewindToStart
+        nowQpc += 2000LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        ctrl.active_slot_is_user = 1u;
+        ctrl.active_slot_play_ms = 500;
+        ctrl.active_slot_duration_ms = 1200000;
+        ctrl.standby_slot_is_user = 0u;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 130000ULL, &ctrl);
+        CHECK(st.state == routeb::BridgeState::PlayingSong);
+        CHECK(smtc.playCount == 2u);
+
+        nowQpc += 5000LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        smtc.snap.naturalTrackEndSeq = 1u;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 200000ULL, &ctrl);
+        CHECK(st.state == routeb::BridgeState::DrainingSongEnd);
+        CHECK(smtc.pauseRewindCount == 1u);
+        CHECK(smtc.pauseRestartCount == 2u);
+    }
+
+    // 14. Short phantom ESC pulses (20ms, 50ms, 90ms) off-station and on-station are completely ignored
+    {
+        int64_t nowQpc = 1000LL * kMs;
+        MockSmtcTransport smtc;
+        smtc.snap.connected = true;
+        smtc.snap.playbackStatus = routeb::kSmtcStatusPlaying;
+        routeb::RadioBridgeCtrlBlock ctrl{};
+        InitMockCtrl(ctrl, nowQpc, kQpcFreq);
+
+        routeb::RouteBCoordinator coord(smtc);
+        coord.Tick(nowQpc, kQpcFreq, true, true, 100000ULL, &ctrl);
+
+        const uint32_t pulseDurationsMs[] = { 20u, 50u, 90u };
+        const uint32_t tunedModes[] = { 0u, 1u };
+        for (uint32_t tuned : tunedModes) {
+            ctrl.station_tuned = tuned;
+            for (uint32_t durMs : pulseDurationsMs) {
+                nowQpc += 500LL * kMs;
+                ctrl.game_heartbeat_qpc = nowQpc;
+                ctrl.esc_paused = 1u;
+                auto st = coord.Tick(nowQpc, kQpcFreq, true, true, 120000ULL, &ctrl);
+                CHECK(st.state == routeb::BridgeState::PlayingSong);
+                CHECK(smtc.pauseCount == 0u);
+
+                nowQpc += static_cast<int64_t>(durMs) * kMs;
+                ctrl.game_heartbeat_qpc = nowQpc;
+                st = coord.Tick(nowQpc, kQpcFreq, true, true, 122000ULL, &ctrl);
+                CHECK(st.state == routeb::BridgeState::PlayingSong);
+                CHECK(smtc.pauseCount == 0u);
+
+                nowQpc += 1LL * kMs;
+                ctrl.game_heartbeat_qpc = nowQpc;
+                ctrl.esc_paused = 0u;
+                st = coord.Tick(nowQpc, kQpcFreq, true, true, 122500ULL, &ctrl);
+                CHECK(st.state == routeb::BridgeState::PlayingSong);
+                CHECK(smtc.pauseCount == 0u);
+                CHECK(smtc.playCount == 0u);
+                CHECK(ctrl.esc_splice_seq == 0u);
+            }
+        }
+    }
+
+    // 15. Play Verify Watchdog heals late 4->5->4->5 Apple Music pause bounce after ESC resume,
+    //     and does NOT fight a manual user pause after the verify window settles
+    {
+        int64_t nowQpc = 1000LL * kMs;
+        MockSmtcTransport smtc;
+        smtc.snap.connected = true;
+        smtc.snap.playbackStatus = routeb::kSmtcStatusPlaying;
+        routeb::RadioBridgeCtrlBlock ctrl{};
+        InitMockCtrl(ctrl, nowQpc, kQpcFreq);
+        ctrl.station_tuned = 0u;
+
+        routeb::RouteBCoordinator coord(smtc);
+        coord.Tick(nowQpc, kQpcFreq, true, true, 100000ULL, &ctrl);
+
+        // Real ESC pause (>= 100ms)
+        ctrl.esc_paused = 1u;
+        coord.Tick(nowQpc, kQpcFreq, true, true, 100000ULL, &ctrl);
+        nowQpc += 120LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        auto st = coord.Tick(nowQpc, kQpcFreq, true, true, 102000ULL, &ctrl);
+        CHECK(st.state == routeb::BridgeState::PausedForEsc);
+        CHECK(smtc.pauseCount == 1u);
+
+        // Resume ESC -> calls RequestPlay() (playCount == 1)
+        nowQpc += 1000LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        ctrl.esc_paused = 0u;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 150000ULL, &ctrl);
+        CHECK(st.state == routeb::BridgeState::PlayingSong);
+        CHECK(smtc.playCount == 1u);
+
+        // Simulate Apple Music UWP pause-teardown race: bounces back to Paused (5) at +20ms
+        nowQpc += 20LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        smtc.snap.playbackStatus = routeb::kSmtcStatusPaused;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 151000ULL, &ctrl);
+        CHECK(smtc.playCount == 1u); // Must not retry before playVerifyRetryMs (250ms)
+
+        nowQpc += 180LL * kMs; // +200ms total < 250ms
+        ctrl.game_heartbeat_qpc = nowQpc;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 155000ULL, &ctrl);
+        CHECK(smtc.playCount == 1u);
+
+        nowQpc += 60LL * kMs; // +260ms total >= 250ms -> watchdog retries RequestPlay()!
+        ctrl.game_heartbeat_qpc = nowQpc;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 158000ULL, &ctrl);
+        CHECK(smtc.playCount == 2u);
+        CHECK(smtc.snap.playbackStatus == routeb::kSmtcStatusPlaying);
+
+        // Hold Playing continuously across >= 400ms to settle verify window
+        nowQpc += 50LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        coord.Tick(nowQpc, kQpcFreq, true, true, 160000ULL, &ctrl); // First observes Playing -> starts 400ms settle
+
+        nowQpc += 450LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        coord.Tick(nowQpc, kQpcFreq, true, true, 180000ULL, &ctrl); // Settle expires -> clears playVerifyPending_
+
+        // Manual user pause at +1000ms must NEVER be overridden!
+        nowQpc += 550LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        smtc.snap.playbackStatus = routeb::kSmtcStatusPaused;
+        coord.Tick(nowQpc, kQpcFreq, true, true, 200000ULL, &ctrl);
+        nowQpc += 400LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        coord.Tick(nowQpc, kQpcFreq, true, true, 210000ULL, &ctrl);
+        CHECK(smtc.playCount == 2u);
+        CHECK(smtc.snap.playbackStatus == routeb::kSmtcStatusPaused);
+    }
+
+    // 16. (a) ESC re-entry while playVerifyPending_ is active and SMTC bounced Paused transfers pause ownership;
+    //     (b) Pause Verify Watchdog retries plain RequestPause (never RequestPauseAndRestartTrack) and does not fight manual Play
+    {
+        // (a) ESC re-entry ownership transfer
+        int64_t nowQpc = 1000LL * kMs;
+        MockSmtcTransport smtc;
+        smtc.snap.connected = true;
+        smtc.snap.playbackStatus = routeb::kSmtcStatusPlaying;
+        routeb::RadioBridgeCtrlBlock ctrl{};
+        InitMockCtrl(ctrl, nowQpc, kQpcFreq);
+
+        routeb::RouteBCoordinator coord(smtc);
+        coord.Tick(nowQpc, kQpcFreq, true, true, 100000ULL, &ctrl);
+
+        ctrl.esc_paused = 1u;
+        coord.Tick(nowQpc, kQpcFreq, true, true, 100000ULL, &ctrl);
+        nowQpc += 120LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        coord.Tick(nowQpc, kQpcFreq, true, true, 102000ULL, &ctrl);
+        CHECK(smtc.pauseCount == 1u);
+
+        // Resume first ESC -> RequestPlay() armed
+        nowQpc += 500LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        ctrl.esc_paused = 0u;
+        coord.Tick(nowQpc, kQpcFreq, true, true, 120000ULL, &ctrl);
+        CHECK(smtc.playCount == 1u);
+
+        // Before 250ms retry fires, AM bounced Paused (5) AND user re-enters ESC for >= 100ms
+        nowQpc += 20LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        smtc.snap.playbackStatus = routeb::kSmtcStatusPaused;
+        ctrl.esc_paused = 1u;
+        coord.Tick(nowQpc, kQpcFreq, true, true, 121000ULL, &ctrl);
+
+        nowQpc += 110LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        auto st = coord.Tick(nowQpc, kQpcFreq, true, true, 126000ULL, &ctrl);
+        CHECK(st.state == routeb::BridgeState::PausedForEsc);
+        CHECK(smtc.pauseCount == 1u); // Already paused; ownership transferred via playVerifyPending_
+
+        // Exit second ESC -> must resume AM!
+        nowQpc += 500LL * kMs;
+        ctrl.game_heartbeat_qpc = nowQpc;
+        ctrl.esc_paused = 0u;
+        st = coord.Tick(nowQpc, kQpcFreq, true, true, 140000ULL, &ctrl);
+        CHECK(st.state == routeb::BridgeState::PlayingSong);
+        CHECK(smtc.playCount == 2u);
+
+        // (b) Pause Verify Watchdog for PausedForDj
+        int64_t pQpc = 5000LL * kMs;
+        MockSmtcTransport smtcP;
+        smtcP.snap.connected = true;
+        smtcP.snap.playbackStatus = routeb::kSmtcStatusPlaying;
+        routeb::RadioBridgeCtrlBlock ctrlP{};
+        InitMockCtrl(ctrlP, pQpc, kQpcFreq);
+
+        routeb::RouteBCoordinator coordP(smtcP);
+        coordP.Tick(pQpc, kQpcFreq, true, true, 100000ULL, &ctrlP);
+
+        ctrlP.active_slot_is_user = 0u;
+        ctrlP.active_slot_duration_ms = 25000;
+        st = coordP.Tick(pQpc, kQpcFreq, true, true, 105000ULL, &ctrlP);
+        CHECK(st.state == routeb::BridgeState::PausedForDj);
+        CHECK(smtcP.pauseRestartCount == 1u);
+        CHECK(smtcP.pauseCount == 1u);
+
+        // Simulate dropped Pause: AM stays Playing (4)
+        pQpc += 50LL * kMs;
+        ctrlP.game_heartbeat_qpc = pQpc;
+        smtcP.snap.playbackStatus = routeb::kSmtcStatusPlaying;
+        coordP.Tick(pQpc, kQpcFreq, true, true, 107000ULL, &ctrlP);
+        CHECK(smtcP.pauseCount == 1u); // Not retried before 350ms
+
+        pQpc += 310LL * kMs; // +360ms >= 350ms -> retries plain RequestPause (NOT RequestPauseAndRestartTrack)
+        ctrlP.game_heartbeat_qpc = pQpc;
+        coordP.Tick(pQpc, kQpcFreq, true, true, 110000ULL, &ctrlP);
+        CHECK(smtcP.pauseCount == 2u);
+        CHECK(smtcP.pauseRestartCount == 1u);
+        CHECK(smtcP.snap.playbackStatus == routeb::kSmtcStatusPaused);
+
+        // Settle Paused (5) across >= 400ms
+        pQpc += 50LL * kMs;
+        ctrlP.game_heartbeat_qpc = pQpc;
+        coordP.Tick(pQpc, kQpcFreq, true, true, 112000ULL, &ctrlP);
+        pQpc += 450LL * kMs;
+        ctrlP.game_heartbeat_qpc = pQpc;
+        coordP.Tick(pQpc, kQpcFreq, true, true, 120000ULL, &ctrlP);
+
+        // Manual user Play at +1000ms must NOT be overridden once settled!
+        pQpc += 550LL * kMs;
+        ctrlP.game_heartbeat_qpc = pQpc;
+        smtcP.snap.playbackStatus = routeb::kSmtcStatusPlaying;
+        coordP.Tick(pQpc, kQpcFreq, true, true, 130000ULL, &ctrlP);
+        pQpc += 500LL * kMs;
+        ctrlP.game_heartbeat_qpc = pQpc;
+        coordP.Tick(pQpc, kQpcFreq, true, true, 140000ULL, &ctrlP);
+        CHECK(smtcP.pauseCount == 2u);
+        CHECK(smtcP.snap.playbackStatus == routeb::kSmtcStatusPlaying);
     }
 }
 

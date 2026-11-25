@@ -36,7 +36,12 @@ public:
 
     virtual void RequestPlay() = 0;
     virtual void RequestPause() = 0;
+    // Natural track-end (DrainingSongEnd): pause and seek to 0:00 via TryChangePlaybackPositionAsync
+    // only if supported; never calls TrySkipPreviousAsync().
     virtual void RequestPauseAndRewindToStart() = 0;
+    // Mid-song entry into PausedForDj: seek to 0:00 if supported, otherwise restart current track
+    // to 0:00 via TrySkipPreviousAsync() when safe (>= 5s pos, >= 4s since track change) before pausing.
+    virtual void RequestPauseAndRestartTrack() = 0;
     virtual void RequestSkipNext() = 0;
     virtual void RequestSkipPrevious() = 0;
 };

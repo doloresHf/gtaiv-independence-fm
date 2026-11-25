@@ -14,6 +14,13 @@ struct RouteBCoordinatorConfig {
     uint32_t skipSuppressMs         = 2000u;  // Ignore SMTC track-end events caused by B/N skips
     uint32_t skipAckFallbackMs      = 350u;   // Acknowledge B same-track restart within 350ms
     uint32_t drainTimeoutMs         = 20000u; // Safety cap waiting for Game DJ transition (>16s max hook drain)
+    uint32_t escPauseDebounceMs     = 100u;   // Ignore <=100ms single-frame GTA IV world-transition pulses
+    uint32_t djPauseSettleMs        = 300u;   // Hold PausedForDj >=300ms after DJ pause/restart before preroll Play
+    uint32_t smtcVerifySettleMs     = 400u;   // Continuous Playing/Paused duration confirming SMTC command settled
+    uint32_t playVerifyRetryMs      = 250u;   // Retry interval if SMTC bounced back to Paused after RequestPlay
+    uint32_t pauseVerifyRetryMs     = 350u;   // Retry interval if SMTC stayed/bounced Playing after RequestPause
+    uint32_t smtcVerifyMaxRetries   = 4u;     // Bounded retry cap so coordinator never fights user
+    uint32_t smtcVerifyTimeoutMs    = 2000u;  // Hard wall-clock cap on confirmation window
 };
 
 struct RouteBCoordinatorStatus {
@@ -54,6 +61,11 @@ public:
     void ResetAndReleaseHolds(RadioBridgeCtrlBlock* ctrl = nullptr);
 
 private:
+    void ArmPlayVerify(int64_t nowQpc) noexcept;
+    void ArmPauseVerify(int64_t nowQpc) noexcept;
+    void ClearSmtcVerify() noexcept;
+    void TickSmtcVerify(int64_t nowQpc, int64_t qpcFreq, const SmtcSnapshot& smtc);
+
     void PublishHostFieldsToCtrl(int64_t nowQpc,
                                  bool bridgeEnabled,
                                  const SmtcSnapshot& smtc,
@@ -95,15 +107,29 @@ private:
     uint32_t escSpliceSeq_          = 0u;
     uint64_t escSpliceStartFrame_   = 0ULL;
     uint64_t escSpliceEndFrame_     = 0ULL;
+    int64_t  escRawStartQpc_        = 0;
     int64_t  escPauseStartQpc_      = 0;
     uint64_t escPauseGapStartFrame_ = 0ULL;
     bool     escResumeAwaitingAudio_ = false;
     int64_t  escResumeStartQpc_     = 0;
     uint64_t escResumeFloorFrame_   = 0ULL;
 
+    int64_t  djPauseStartQpc_       = 0;
     bool     prerollAwaitingAudio_  = false;
     uint64_t prerollFloorFrame_     = 0ULL;
     uint64_t skipFloorFrame_        = 0ULL;
+
+    bool     playVerifyPending_        = false;
+    int64_t  playVerifyStartQpc_       = 0;
+    int64_t  playVerifyLastAttemptQpc_ = 0;
+    int64_t  playVerifyStableSinceQpc_ = 0;
+    uint32_t playVerifyRetries_        = 0u;
+
+    bool     pauseVerifyPending_        = false;
+    int64_t  pauseVerifyStartQpc_       = 0;
+    int64_t  pauseVerifyLastAttemptQpc_ = 0;
+    int64_t  pauseVerifyStableSinceQpc_ = 0;
+    uint32_t pauseVerifyRetries_        = 0u;
 };
 
 } // namespace routeb
